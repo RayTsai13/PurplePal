@@ -1,0 +1,33 @@
+{
+  "name": "purplepal",
+  "version": "1.0.0",
+  "description": "A handy dandy discord bot used to verify residents :)",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/RayTsai13/PurplePal.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/RayTsai13/PurplePal/issues"
+  },
+  "homepage": "https://github.com/RayTsai13/PurplePal#readme",
+  "dependencies": {
+    "@prisma/client": "^6.17.1",
+    "discord.js": "^14.23.2",
+    "prisma": "^6.17.1",
+    "winston": "^3.18.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.9.1",
+    "nodemon": "^3.1.10",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3"
+  }
+}
