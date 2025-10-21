@@ -4,7 +4,13 @@
   "description": "A handy dandy discord bot used to verify residents :)",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "dev": "nodemon --exec ts-node src/index.ts",
+    "prestart": "npm run build",
+    "start": "node dist/index.js",
+    "build": "tsc",
+    "health": "ts-node src/core/services/healthCheck.ts",
+    "lint": "tsc --noEmit",
+    "test": "ts-node src/core/services/healthCheck.ts"
   },
   "repository": {
     "type": "git",
@@ -21,8 +27,11 @@
   "dependencies": {
     "@prisma/client": "^6.17.1",
     "discord.js": "^14.23.2",
+    "dotenv": "^17.2.3",
+    "pino": "^10.1.0",
     "prisma": "^6.17.1",
-    "winston": "^3.18.3"
+    "winston": "^3.18.3",
+    "zod": "^4.1.12"
   },
   "devDependencies": {
     "@types/node": "^24.9.1",

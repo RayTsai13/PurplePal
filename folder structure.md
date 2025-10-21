@@ -1,0 +1,17 @@
+src/
+  adapters/
+    discord/
+      DiscordClient.ts
+    persistence/
+    scheduler/
+  core/
+    domain/
+    services/
+  infra/
+    logger.ts
+    env.ts
+    config.ts
+  config/
+    default.json
+  tests/
+index.ts
