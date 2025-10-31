@@ -10,7 +10,7 @@
     "build": "tsc",
     "health": "ts-node src/core/services/healthCheck.ts",
     "lint": "tsc --noEmit",
-    "test": "ts-node src/core/services/healthCheck.ts"
+    "test": "vitest run"
   },
   "repository": {
     "type": "git",
@@ -37,6 +37,7 @@
     "@types/node": "^24.9.1",
     "nodemon": "^3.1.10",
     "ts-node": "^10.9.2",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.5"
   }
 }
