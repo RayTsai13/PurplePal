@@ -1,11 +1,11 @@
-import fs from "fs";
-import path from "path";
-import { PrismaClient } from "../../generated/prisma";
-import { DiscordClient } from "../adapters/discord/DiscordClient";
-import { startOutboxWorker } from "../adapters/scheduler/OutboxWorker";
-import { startTimeoutWorker } from "../adapters/scheduler/TimeoutWorker";
-import type { VerificationOrchestrator } from "../core/application/orchestrator/VerificationOrchestrator";
-import { VerificationOrchestrator as Orchestrator } from "../core/application/orchestrator/VerificationOrchestrator";
+import fs from 'fs';
+import path from 'path';
+import { PrismaClient } from '../../generated/prisma';
+import { DiscordClient } from '../adapters/discord/DiscordClient';
+import { startOutboxWorker } from '../adapters/scheduler/OutboxWorker';
+import { startTimeoutWorker } from '../adapters/scheduler/TimeoutWorker';
+import type { VerificationOrchestrator } from '../core/application/orchestrator/VerificationOrchestrator';
+import { VerificationOrchestrator as Orchestrator } from '../core/application/orchestrator/VerificationOrchestrator';
 import type {
   HallService,
   RoomService,
@@ -15,11 +15,17 @@ import type {
   RoleService,
   AuditService,
   PolicyService,
-} from "../core/application/ports";
-import { logger } from "./logger";
-import { env } from "./env";
-
-type JsonValue = Record<string, unknown>;
+} from '../core/application/ports';
+import { logger } from './logger';
+import { env } from './env';
+import { PolicySchema, type PolicyConfig } from './config/policySchema';
+import { HallDirectory } from './services/hallDirectory';
+import { RoomServiceImpl } from './services/roomService';
+import { PolicyServiceImpl } from './services/policyService';
+import { HallServiceImpl } from './services/hallService';
+import { PrismaCaseService } from './services/prismaCaseService';
+import { PrismaDecisionService } from './services/prismaDecisionService';
+import { PrismaAuditService } from './services/prismaAuditService';
 
 export interface AppContainer {
   orchestrator: VerificationOrchestrator;
@@ -28,11 +34,14 @@ export interface AppContainer {
 }
 
 export async function buildOrchestrator(): Promise<AppContainer> {
-  const config = loadConfiguration();
+  const policyConfig = loadPolicyConfig();
+  ensureLegacyHallsConfig();
+
   const prisma = new PrismaClient();
   const discordClient = new DiscordClient();
 
-  const services = buildServices(config);
+  const hallDirectory = new HallDirectory(policyConfig.halls);
+  const services = buildServices(policyConfig, hallDirectory, prisma);
   const orchestrator = new Orchestrator(
     services.hall,
     services.room,
@@ -62,34 +71,34 @@ export async function buildOrchestrator(): Promise<AppContainer> {
   return { orchestrator, start, stop };
 }
 
-function loadConfiguration(): { halls: JsonValue; policy: JsonValue } {
-  const hallsPath = resolveFromRoot("config/halls.json");
-  const policyPath = resolveFromRoot("config/policy.json");
+function loadPolicyConfig(): PolicyConfig {
+  const policyPath = resolveFromRoot('config/policy.json');
+  const raw = readJson(policyPath);
+  return PolicySchema.parse(raw);
+}
 
+function ensureLegacyHallsConfig(): void {
+  const hallsPath = resolveFromRoot('config/halls.json');
   const halls = readJson(hallsPath);
-  const policy = readJson(policyPath);
-
   if (!Object.keys(halls).length) {
-    throw new Error("Configuration error: halls.json contains no halls");
+    throw new Error('Configuration error: halls.json contains no halls');
   }
-
-  return { halls, policy };
 }
 
 function resolveFromRoot(relative: string): string {
   return path.resolve(process.cwd(), relative);
 }
 
-function readJson(targetPath: string): JsonValue {
+function readJson(targetPath: string): Record<string, unknown> {
   try {
-    const fileContents = fs.readFileSync(targetPath, "utf-8");
+    const fileContents = fs.readFileSync(targetPath, 'utf-8');
     return JSON.parse(fileContents);
   } catch (error) {
     throw new Error(`Failed to read configuration file at ${targetPath}: ${(error as Error).message}`);
   }
 }
 
-function buildServices(config: { halls: JsonValue; policy: JsonValue }): {
+function buildServices(policy: PolicyConfig, hallDirectory: HallDirectory, prisma: PrismaClient): {
   hall: HallService;
   room: RoomService;
   cases: CaseService;
@@ -99,44 +108,11 @@ function buildServices(config: { halls: JsonValue; policy: JsonValue }): {
   audit: AuditService;
   policy: PolicyService;
 } {
-  const hall: HallService = {
-    async validate() {
-      throw notImplemented("HallService.validate");
-    },
-  };
+  const hall = new HallServiceImpl(hallDirectory);
+  const room = new RoomServiceImpl(hallDirectory);
 
-  const room: RoomService = {
-    async normalize() {
-      throw notImplemented("RoomService.normalize");
-    },
-  };
-
-  const cases: CaseService = {
-    async getActiveCase() {
-      throw notImplemented("CaseService.getActiveCase");
-    },
-    async createIfNone() {
-      throw notImplemented("CaseService.createIfNone");
-    },
-    async updateState() {
-      throw notImplemented("CaseService.updateState");
-    },
-    async markExpired() {
-      throw notImplemented("CaseService.markExpired");
-    },
-    async findById() {
-      throw notImplemented("CaseService.findById");
-    },
-  };
-
-  const decision: DecisionService = {
-    async authorize() {
-      throw notImplemented("DecisionService.authorize");
-    },
-    async recordDecision() {
-      throw notImplemented("DecisionService.recordDecision");
-    },
-  };
+  const cases: CaseService = new PrismaCaseService(prisma);
+  const decision: DecisionService = new PrismaDecisionService(prisma);
 
   const notification: NotificationService = {
     async sendDM() {
@@ -156,39 +132,11 @@ function buildServices(config: { halls: JsonValue; policy: JsonValue }): {
     },
   };
 
-  const audit: AuditService = {
-    async record() {
-      throw notImplemented("AuditService.record");
-    },
-  };
+  const audit: AuditService = new PrismaAuditService(prisma);
 
-  const policy: PolicyService = {
-    async currentTerm() {
-      const term = config.policy.term;
-      if (typeof term !== "string") {
-        throw new Error("Policy configuration missing 'term'");
-      }
-      return term;
-    },
-    async timeouts() {
-      const timeouts = config.policy.timeouts as JsonValue;
-      if (!timeouts) {
-        throw new Error("Policy configuration missing 'timeouts'");
-      }
-      return {
-        awaitingRA_ttl_hours: Number(timeouts.awaitingRA_ttl_hours ?? 0),
-        reminder_hours: Array.isArray(timeouts.reminder_hours) ? (timeouts.reminder_hours as number[]) : [],
-      };
-    },
-    async limits() {
-      throw notImplemented("PolicyService.limits");
-    },
-    async messaging() {
-      throw notImplemented("PolicyService.messaging");
-    },
-  };
+  const policyService = new PolicyServiceImpl(policy);
 
-  return { hall, room, cases, decision, notification, roles, audit, policy };
+  return { hall, room, cases, decision, notification, roles, audit, policy: policyService };
 }
 
 function notImplemented(method: string): Error {
