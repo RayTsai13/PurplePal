@@ -8,6 +8,9 @@ datasource db {
   url      = "file:./dev.db"
 }
 
+/**
+ * ===================== Enums =====================
+ */
 enum UserStatus {
   UNVERIFIED
   PENDING
@@ -27,47 +30,156 @@ enum SourceType {
   MANUAL
 }
 
+enum CaseState {
+  joined
+  hall_chosen
+  room_entered
+  awaiting_ra
+  approved
+  denied
+  expired
+}
+
+enum ActorType {
+  user
+  ra
+  system
+}
+
+enum DecisionType {
+  approve
+  deny
+}
+
+enum OutboxStatus {
+  pending
+  sent
+  failed
+}
+
+enum OutboxKind {
+  dm
+  channel
+}
+
+/**
+ * ===================== Models =====================
+ */
+
 model User {
   id        Int        @id @default(autoincrement())
   discordId String     @unique
   status    UserStatus @default(UNVERIFIED)
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
 
-  claims  ResidencyClaim[] @relation("UserClaims")
-  decided ResidencyClaim[] @relation("DecidedBy")
   audits  AuditEvent[]     @relation("AuditActor")
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  decided ResidencyClaim[] @relation("DecidedBy")
+  claims  ResidencyClaim[] @relation("UserClaims")
 }
 
 model ResidencyClaim {
-  id            Int            @id @default(autoincrement())
-  userId        Int
-  user          User           @relation("UserClaims", fields: [userId], references: [id], onDelete: Cascade)
-  hall          String
-  room          String
-  term          String
-  source        SourceType     @default(MANUAL)
-  state         ResidencyState @default(DRAFT)
-  submittedAt   DateTime?
-  decidedAt     DateTime?
-  decidedBy     Int?
-  decidedByUser User?          @relation("DecidedBy", fields: [decidedBy], references: [id])
-  denialReason  String?
+  id           Int            @id @default(autoincrement())
+  userId       Int
+  hall         String
+  room         String
+  term         String
+  source       SourceType     @default(MANUAL)
+  state        ResidencyState @default(DRAFT)
+  submittedAt  DateTime?
+  decidedAt    DateTime?
+  decidedBy    Int?
+  denialReason String?
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
 
-  audits AuditEvent[] @relation("ClaimAudits")
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  audits        AuditEvent[] @relation("ClaimAudits")
+  decidedByUser User?        @relation("DecidedBy", fields: [decidedBy], references: [id])
+  user          User         @relation("UserClaims", fields: [userId], references: [id], onDelete: Cascade)
 }
 
 model AuditEvent {
-  id          Int            @id @default(autoincrement())
+  id          Int      @id @default(autoincrement())
   actorId     Int
-  actor       User           @relation("AuditActor", fields: [actorId], references: [id])
   caseId      Int
-  claim       ResidencyClaim @relation("ClaimAudits", fields: [caseId], references: [id])
   action      String
   payloadJSON Json
-  timestamp   DateTime       @default(now())
+  timestamp   DateTime @default(now())
+
+  claim ResidencyClaim @relation("ClaimAudits", fields: [caseId], references: [id])
+  actor User           @relation("AuditActor", fields: [actorId], references: [id])
+}
+
+model VerificationCase {
+  id        String    @id @default(cuid())
+  userId    String
+  term      String
+  state     CaseState
+  hall      String?
+  room      String?
+  raUserId  String?
+  expiresAt DateTime?
+  version   Int       @default(0)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  // Back-relations
+  auditLogs   AuditLog[] @relation("CaseToAuditLogs")
+  decision    Decision?  @relation("CaseToDecision")
+  outboxItems Outbox[]   @relation("CaseToOutbox")
+
+  @@index([userId, term])
+  @@index([state])
+  @@map("cases")
+}
+
+model AuditLog {
+  id             String     @id @default(cuid())
+  caseId         String
+  actorType      ActorType
+  actorId        String?
+  action         String
+  fromState      CaseState?
+  toState        CaseState?
+  payload        Json?
+  idempotencyKey String?
+  timestamp      DateTime   @default(now())
+
+  case VerificationCase @relation("CaseToAuditLogs", fields: [caseId], references: [id], onDelete: Cascade)
+
+  @@index([caseId, timestamp])
+  @@index([idempotencyKey])
+  @@map("audit_logs")
+}
+
+model Decision {
+  id             String       @id @default(cuid())
+  caseId         String       @unique
+  raUserId       String
+  decision       DecisionType
+  reason         String?
+  decidedAt      DateTime     @default(now())
+  idempotencyKey String       @unique
+
+  case VerificationCase @relation("CaseToDecision", fields: [caseId], references: [id], onDelete: Cascade)
+
+  @@map("decisions")
+}
+
+model Outbox {
+  id             String       @id @default(cuid())
+  caseId         String?
+  kind           OutboxKind
+  template       String
+  payload        Json?
+  status         OutboxStatus @default(pending)
+  attempts       Int          @default(0)
+  lastError      String?
+  nextAttemptAt  DateTime?
+  idempotencyKey String?      @unique
+
+  case VerificationCase? @relation("CaseToOutbox", fields: [caseId], references: [id], onDelete: SetNull)
+
+  @@index([status, nextAttemptAt])
+  @@map("outbox")
 }

@@ -10,7 +10,8 @@
     "build": "tsc",
     "health": "ts-node src/core/services/healthCheck.ts",
     "lint": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "sanity:active-case": "ts-node prisma/sanityActiveCase.ts"
   },
   "repository": {
     "type": "git",
