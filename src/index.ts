@@ -1,45 +1,43 @@
-import fs from 'fs';
-import { DiscordClient } from './adapters/discord/DiscordClient';
-import { env } from './infra/env';
+import type { AppContainer } from './infra/container';
+import { buildOrchestrator } from './infra/container';
 import { logger } from './infra/logger';
 
-// Validate essential configuration before starting the bot
-function validateConfig() {
-    const halls = JSON.parse(fs.readFileSync('./config/halls.json', 'utf-8'));
-    const policy = JSON.parse(fs.readFileSync('./config/policy.json', 'utf-8'));
-
-    if (!Object.keys(halls).length){
-        throw new Error('No halls defined');
-    }
-    return { halls, policy };
-}
-
-let discordClient: DiscordClient | null = null;
+let app: AppContainer | null = null;
 
 async function main() {
-    logger.info('Starting bot...');
+  logger.info('Starting bot...');
 
-    validateConfig();
+  app = await buildOrchestrator();
+  await app.start();
+  logger.info('Application container started');
 
-    discordClient = new DiscordClient();
-    await discordClient.start(env.DISCORD_TOKEN);
+  const shutdown = async (signal: NodeJS.Signals) => {
+    logger.info({ signal }, 'Shutting down...');
+    try {
+      await app?.stop();
+    } catch (err) {
+      logger.error({ err }, 'Error during shutdown');
+    } finally {
+      process.exit(0);
+    }
+  };
 
-    logger.info({ guilds: discordClient.guildCount }, 'Bot started');
-
-    const shutdown = (signal: NodeJS.Signals) => {
-        logger.info({ signal }, 'Shutting down...');
-        discordClient?.shutdown();
-        process.exit(0);
-    };
-
-    process.once('SIGINT', () => shutdown('SIGINT'));
-    process.once('SIGTERM', () => shutdown('SIGTERM'));
+  process.once('SIGINT', () => {
+    void shutdown('SIGINT');
+  });
+  process.once('SIGTERM', () => {
+    void shutdown('SIGTERM');
+  });
 }
 
 main().catch((err) => {
-
-logger.error({ err }, 'Failed to start bot');
-
-discordClient?.shutdown();
-process.exit(1);
+  logger.error({ err }, 'Failed to start bot');
+  if (app) {
+    app
+      .stop()
+      .catch((stopErr) => logger.error({ err: stopErr }, 'Failed to stop app container after crash'))
+      .finally(() => process.exit(1));
+    return;
+  }
+  process.exit(1);
 });

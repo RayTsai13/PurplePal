@@ -1,5 +1,101 @@
 {
-  "reminderHours": 24,
-  "expireHours": 72,
-  "termLabel": "Fall 2025"
+  "term": "Fall 2025",
+  "timeouts": {
+    "awaitingRA_ttl_hours": 72,
+    "reminder_hours": [24]
+  },
+
+  "halls": [
+    {
+      "name": "Summit",
+      "aliases": ["summit", "SUMMIT"],
+      "raRoleId": "1430120010969383008",
+      "queueChannelId": "1430120254985601034",
+      "hallRoleId": "1430118304600555531",
+      "room": {
+        "pattern": "^S-\\d{3}-[A-D]$",
+        "example": "S-312-A",
+        "normalize": {
+          "uppercase": true,
+          "trimSpaces": true,
+          "fixHyphens": true,
+          "allowMissingHyphens": true,
+          "collapseDelimiters": true
+        }
+      }
+    },
+
+    {
+      "name": "Forest",
+      "aliases": ["forest", "FOREST"],
+      "raRoleId": "1430120010969383008",
+      "queueChannelId": "1430120274971328704",
+      "hallRoleId": "1430119540553154640",
+      "room": {
+        "pattern": "^F-\\d{3}-[A-D]$",
+        "example": "F-312-A",
+        "normalize": {
+          "uppercase": true,
+          "trimSpaces": true,
+          "fixHyphens": true,
+          "allowMissingHyphens": true,
+          "collapseDelimiters": true
+        }
+      }
+    },
+
+    {
+      "name": "Horizon",
+      "aliases": ["horizon", "HORIZON"],
+      "raRoleId": "1430120010969383008",
+      "queueChannelId": "1430120307468931082",
+      "hallRoleId": "1430119589462675516",
+      "room": {
+        "pattern": "^H-\\d{3}-[A-D]$",
+        "example": "H-312-A",
+        "normalize": {
+          "uppercase": true,
+          "trimSpaces": true,
+          "fixHyphens": true,
+          "allowMissingHyphens": true,
+          "collapseDelimiters": true
+        }
+      }
+    }
+  ],
+
+  "limits": {
+    "maxNotificationRetries": 5,
+    "notificationBackoffSeconds": [30, 120, 300, 900, 1800],
+    "roleAssignMaxRetries": 3,
+    "roleAssignRetryBackoffSeconds": [10, 30, 60]
+  },
+  "features": {
+    "enablePublicFallbackOnDMDenied": false,
+    "enableRAReassign": false
+  },
+
+  "templates": {
+    "dm": {
+      "ask_hall": "Welcome! Which hall are you in? Reply with one of: {{hall_list}}.",
+      "invalid_hall": "“{{input}}” isn’t a recognized hall. Please enter one of: {{hall_list}}.",
+      "ask_room": "Great — {{hall}}. What’s your room? Use the format {{room_example}} (prefix must match your hall and unit is A–D).",
+      "prefix_mismatch": "Your hall is {{hall}}, so the room must start with “{{hall_prefix}}”. Example: {{room_example}}.",
+      "invalid_room": "That room format doesn’t look right. Expected something like {{room_example}} (e.g., F-312-A). Try again.",
+      "await_ra_notice": "Thanks! We’ve pinged the {{hall}} RA to verify {{room}}. We’ll update you here.",
+      "reminder_user": "Still working on it — your {{hall}} verification for {{room}} is awaiting RA review. No action needed from you.",
+      "approved": "✅ Verified for {{hall}} {{room}}. Your access has been upgraded — welcome!",
+      "denied": "❌ Verification was denied by the RA. Reason: {{reason}}. If this seems wrong, reply here.",
+      "expired": "⏳ This request expired after {{ttl_hours}} hours. Start again with {{start_command}}.",
+      "already_in_progress": "You already have a verification in progress for {{term}}. We’ll notify you once it’s resolved.",
+      "system_error": "We hit a snag processing your request. Please try again shortly."
+    },
+    "ra_queue": {
+      "ra_verify_card_title": "Verify {{user_tag}} — {{hall}} • {{room}}",
+      "ra_verify_card_body": "User: {{user_tag}}\nHall: {{hall}}\nRoom: {{room}}\nPrefix must match hall; unit A–D.\nChoose Approve or Deny below. Your action is logged.",
+      "ra_reminder": "⏰ Reminder: Pending verification for {{user_tag}} — {{hall}} • {{room}}.",
+      "unauthorized_attempt": "⚠️ Blocked unauthorized action by {{actor_tag}} on case {{case_id}}.",
+      "decision_ack": "📝 Recorded {{decision}} by {{actor_tag}} for case {{case_id}}."
+    }
+  }
 }
