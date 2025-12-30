@@ -1,7 +1,7 @@
 import { Prisma, PrismaClient, CaseState as PrismaCaseState, VerificationCase } from '../../../generated/prisma';
-import type { CaseRecord, CaseService, CaseState } from '../../core/application/ports';
+import type { CaseRecord, CaseRepository, CaseState } from '../../core/ports';
 
-const ACTIVE_STATES: CaseState[] = ['joined', 'hall_chosen', 'room_entered', 'awaiting_ra'];
+const ACTIVE_STATES: CaseState[] = ['joined', 'hall_chosen', 'awaiting_ra'];
 
 const toCaseRecord = (kase: VerificationCase): CaseRecord => ({
   id: kase.id,
@@ -13,6 +13,8 @@ const toCaseRecord = (kase: VerificationCase): CaseRecord => ({
   raUserId: kase.raUserId ?? undefined,
   version: kase.version,
   expiresAt: kase.expiresAt ?? undefined,
+  reminderSentAt: kase.reminderSentAt ?? undefined,
+  updatedAt: kase.updatedAt,
 });
 
 type MarkExpiredFilters = { before?: Date };
@@ -20,7 +22,7 @@ type MarkExpiredFilters = { before?: Date };
 const isMarkExpiredFilters = (filters?: unknown): filters is MarkExpiredFilters =>
   typeof filters === 'object' && filters !== null && 'before' in filters;
 
-export class PrismaCaseService implements CaseService {
+export class PrismaCaseRepository implements CaseRepository {
   constructor(private readonly prisma: PrismaClient) {}
 
   async getActiveCase(userId: string, term: string): Promise<CaseRecord | null> {
@@ -76,6 +78,7 @@ export class PrismaCaseService implements CaseService {
         if (patch.room !== undefined) data.room = patch.room;
         if (patch.raUserId !== undefined) data.raUserId = patch.raUserId;
         if (patch.expiresAt !== undefined) data.expiresAt = patch.expiresAt;
+        if (patch.reminderSentAt !== undefined) data.reminderSentAt = patch.reminderSentAt;
       }
 
       const updated = await tx.verificationCase.update({
@@ -118,5 +121,25 @@ export class PrismaCaseService implements CaseService {
   async findById(caseId: string): Promise<CaseRecord | null> {
     const kase = await this.prisma.verificationCase.findUnique({ where: { id: caseId } });
     return kase ? toCaseRecord(kase) : null;
+  }
+
+  async listAwaitingRA(): Promise<CaseRecord[]> {
+    const rows = await this.prisma.verificationCase.findMany({
+      where: { state: 'awaiting_ra' },
+    });
+    return rows.map(toCaseRecord);
+  }
+
+  async markReminderSent(caseId: string, timestamp: Date): Promise<void> {
+    await this.prisma.verificationCase.update({
+      where: { id: caseId },
+      data: { reminderSentAt: timestamp },
+    });
+  }
+
+  async resetCase(userId: string, term: string): Promise<void> {
+    await this.prisma.verificationCase.deleteMany({
+      where: { userId, term },
+    });
   }
 }

@@ -5,6 +5,7 @@ dotenv.config();
 
 const EnvSchema = z.object({
   DISCORD_TOKEN: z.string().min(1),
+  DISCORD_APPLICATION_ID: z.string().min(1),
   DATABASE_URL: z.string().min(1),
   GUILD_ID: z.string().min(1),
   ADMINS_IDS: z.string().optional(),

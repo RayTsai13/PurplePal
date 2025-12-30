@@ -2,30 +2,30 @@ import fs from 'fs';
 import path from 'path';
 import { PrismaClient } from '../../generated/prisma';
 import { DiscordClient } from '../adapters/discord/DiscordClient';
+import { VerificationBot } from '../adapters/discord/VerificationBot';
 import { startOutboxWorker } from '../adapters/scheduler/OutboxWorker';
 import { startTimeoutWorker } from '../adapters/scheduler/TimeoutWorker';
 import type { VerificationOrchestrator } from '../core/application/orchestrator/VerificationOrchestrator';
 import { VerificationOrchestrator as Orchestrator } from '../core/application/orchestrator/VerificationOrchestrator';
-import type {
-  HallService,
-  RoomService,
-  CaseService,
-  DecisionService,
-  NotificationService,
-  RoleService,
-  AuditService,
-  PolicyService,
-} from '../core/application/ports';
 import { logger } from './logger';
 import { env } from './env';
 import { PolicySchema, type PolicyConfig } from './config/policySchema';
 import { HallDirectory } from './services/hallDirectory';
-import { RoomServiceImpl } from './services/roomService';
-import { PolicyServiceImpl } from './services/policyService';
-import { HallServiceImpl } from './services/hallService';
-import { PrismaCaseService } from './services/prismaCaseService';
-import { PrismaDecisionService } from './services/prismaDecisionService';
-import { PrismaAuditService } from './services/prismaAuditService';
+import { DiscordServiceImpl } from './services/DiscordService';
+import { ConfigImpl } from './services/Config';
+import { PrismaCaseRepository } from './services/prismaCaseService';
+import { PrismaDecisionRepository } from './services/prismaDecisionService';
+import { PrismaAuditRepository } from './services/prismaAuditService';
+import { PrismaOutboxRepository } from './services/prismaOutboxService';
+
+import type {
+  DiscordService,
+  Config,
+  CaseRepository,
+  DecisionRepository,
+  AuditRepository,
+  OutboxRepository,
+} from '../core/ports';
 
 export interface AppContainer {
   orchestrator: VerificationOrchestrator;
@@ -35,35 +35,62 @@ export interface AppContainer {
 
 export async function buildOrchestrator(): Promise<AppContainer> {
   const policyConfig = loadPolicyConfig();
-  ensureLegacyHallsConfig();
 
   const prisma = new PrismaClient();
   const discordClient = new DiscordClient();
 
   const hallDirectory = new HallDirectory(policyConfig.halls);
-  const services = buildServices(policyConfig, hallDirectory, prisma);
+  const services = buildServices(policyConfig, hallDirectory, prisma, discordClient);
   const orchestrator = new Orchestrator(
-    services.hall,
-    services.room,
+    services.discord,
+    services.config,
     services.cases,
-    services.decision,
-    services.notification,
-    services.roles,
+    services.decisions,
     services.audit,
-    services.policy,
+    services.outbox,
+    logger,
   );
+  const verificationBot = new VerificationBot(
+    discordClient,
+    orchestrator,
+    services.cases,
+    services.config,
+    services.discord,
+    env.ADMINS_IDS,
+    env.GUILD_ID,
+  );
+  verificationBot.bind();
+
+  const workerHandles: Array<{ stop: () => Promise<void> }> = [];
 
   const start = async (): Promise<void> => {
     logger.info("Starting application container");
     await prisma.$connect();
-    startOutboxWorker();
-    startTimeoutWorker();
+
+    workerHandles.push(
+      startOutboxWorker({
+        outbox: services.outbox,
+        notification: services.discord,
+        policy: services.config,
+      }),
+    );
+
+    workerHandles.push(
+      startTimeoutWorker({
+        cases: services.cases,
+        policy: services.config,
+        orchestrator,
+        outbox: services.outbox,
+      }),
+    );
+
     await discordClient.start(env.DISCORD_TOKEN);
     logger.info({ guilds: discordClient.guildCount }, "Discord client ready");
   };
 
   const stop = async (): Promise<void> => {
     logger.info("Stopping application container");
+    await Promise.all(workerHandles.map((worker) => worker.stop()));
     discordClient.shutdown();
     await prisma.$disconnect();
   };
@@ -75,14 +102,6 @@ function loadPolicyConfig(): PolicyConfig {
   const policyPath = resolveFromRoot('config/policy.json');
   const raw = readJson(policyPath);
   return PolicySchema.parse(raw);
-}
-
-function ensureLegacyHallsConfig(): void {
-  const hallsPath = resolveFromRoot('config/halls.json');
-  const halls = readJson(hallsPath);
-  if (!Object.keys(halls).length) {
-    throw new Error('Configuration error: halls.json contains no halls');
-  }
 }
 
 function resolveFromRoot(relative: string): string {
@@ -98,47 +117,26 @@ function readJson(targetPath: string): Record<string, unknown> {
   }
 }
 
-function buildServices(policy: PolicyConfig, hallDirectory: HallDirectory, prisma: PrismaClient): {
-  hall: HallService;
-  room: RoomService;
-  cases: CaseService;
-  decision: DecisionService;
-  notification: NotificationService;
-  roles: RoleService;
-  audit: AuditService;
-  policy: PolicyService;
+function buildServices(
+  policy: PolicyConfig,
+  hallDirectory: HallDirectory,
+  prisma: PrismaClient,
+  discordClient: DiscordClient,
+): {
+  discord: DiscordService;
+  config: Config;
+  cases: CaseRepository;
+  decisions: DecisionRepository;
+  audit: AuditRepository;
+  outbox: OutboxRepository;
 } {
-  const hall = new HallServiceImpl(hallDirectory);
-  const room = new RoomServiceImpl(hallDirectory);
+  const discord: DiscordService = new DiscordServiceImpl(discordClient, hallDirectory, env.GUILD_ID);
+  const config: Config = new ConfigImpl(policy);
 
-  const cases: CaseService = new PrismaCaseService(prisma);
-  const decision: DecisionService = new PrismaDecisionService(prisma);
+  const cases: CaseRepository = new PrismaCaseRepository(prisma);
+  const decisions: DecisionRepository = new PrismaDecisionRepository(prisma);
+  const audit: AuditRepository = new PrismaAuditRepository(prisma);
+  const outbox: OutboxRepository = new PrismaOutboxRepository(prisma);
 
-  const notification: NotificationService = {
-    async sendDM() {
-      throw notImplemented("NotificationService.sendDM");
-    },
-    async sendToQueue() {
-      throw notImplemented("NotificationService.sendToQueue");
-    },
-  };
-
-  const roles: RoleService = {
-    async assign() {
-      throw notImplemented("RoleService.assign");
-    },
-    async remove() {
-      throw notImplemented("RoleService.remove");
-    },
-  };
-
-  const audit: AuditService = new PrismaAuditService(prisma);
-
-  const policyService = new PolicyServiceImpl(policy);
-
-  return { hall, room, cases, decision, notification, roles, audit, policy: policyService };
-}
-
-function notImplemented(method: string): Error {
-  return new Error(`${method} not implemented yet`);
+  return { discord, config, cases, decisions, audit, outbox };
 }

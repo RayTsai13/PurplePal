@@ -11,29 +11,9 @@ datasource db {
 /**
  * ===================== Enums =====================
  */
-enum UserStatus {
-  UNVERIFIED
-  PENDING
-  VERIFIED
-  DENIED
-}
-
-enum ResidencyState {
-  DRAFT
-  PENDING
-  APPROVED
-  DENIED
-  EXPIRED
-}
-
-enum SourceType {
-  MANUAL
-}
-
 enum CaseState {
   joined
   hall_chosen
-  room_entered
   awaiting_ra
   approved
   denied
@@ -66,50 +46,6 @@ enum OutboxKind {
  * ===================== Models =====================
  */
 
-model User {
-  id        Int        @id @default(autoincrement())
-  discordId String     @unique
-  status    UserStatus @default(UNVERIFIED)
-  createdAt DateTime   @default(now())
-  updatedAt DateTime   @updatedAt
-
-  audits  AuditEvent[]     @relation("AuditActor")
-  decided ResidencyClaim[] @relation("DecidedBy")
-  claims  ResidencyClaim[] @relation("UserClaims")
-}
-
-model ResidencyClaim {
-  id           Int            @id @default(autoincrement())
-  userId       Int
-  hall         String
-  room         String
-  term         String
-  source       SourceType     @default(MANUAL)
-  state        ResidencyState @default(DRAFT)
-  submittedAt  DateTime?
-  decidedAt    DateTime?
-  decidedBy    Int?
-  denialReason String?
-  createdAt    DateTime       @default(now())
-  updatedAt    DateTime       @updatedAt
-
-  audits        AuditEvent[] @relation("ClaimAudits")
-  decidedByUser User?        @relation("DecidedBy", fields: [decidedBy], references: [id])
-  user          User         @relation("UserClaims", fields: [userId], references: [id], onDelete: Cascade)
-}
-
-model AuditEvent {
-  id          Int      @id @default(autoincrement())
-  actorId     Int
-  caseId      Int
-  action      String
-  payloadJSON Json
-  timestamp   DateTime @default(now())
-
-  claim ResidencyClaim @relation("ClaimAudits", fields: [caseId], references: [id])
-  actor User           @relation("AuditActor", fields: [actorId], references: [id])
-}
-
 model VerificationCase {
   id        String    @id @default(cuid())
   userId    String
@@ -119,6 +55,7 @@ model VerificationCase {
   room      String?
   raUserId  String?
   expiresAt DateTime?
+  reminderSentAt DateTime?
   version   Int       @default(0)
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt

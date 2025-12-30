@@ -1,10 +1,10 @@
 import crypto from 'node:crypto';
 import type { PrismaClient } from '../../../generated/prisma';
-import type { DecisionService } from '../../core/application/ports';
+import type { DecisionRepository } from '../../core/ports';
 
 const ensureIdempotencyKey = (provided?: string): string => provided ?? crypto.randomUUID();
 
-export class PrismaDecisionService implements DecisionService {
+export class PrismaDecisionRepository implements DecisionRepository {
   constructor(private readonly prisma: PrismaClient) {}
 
   async authorize(raUserId: string, kase: { hall?: string; userId: string }): Promise<boolean> {

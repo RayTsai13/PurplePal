@@ -1,7 +1,7 @@
 import { Prisma, PrismaClient, CaseState as PrismaCaseState } from '../../../generated/prisma';
-import type { AuditService } from '../../core/application/ports';
+import type { AuditRepository } from '../../core/ports';
 
-export class PrismaAuditService implements AuditService {
+export class PrismaAuditRepository implements AuditRepository {
   constructor(private readonly prisma: PrismaClient) {}
 
   async record(
