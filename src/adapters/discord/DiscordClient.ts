@@ -1,4 +1,4 @@
-import { Client, Events, GatewayIntentBits } from 'discord.js';
+import { Client, Events, GatewayIntentBits, Partials } from 'discord.js';
 import { logger } from '../../infra/logger';
 
 export class DiscordClient {
@@ -11,7 +11,10 @@ export class DiscordClient {
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMembers,
         GatewayIntentBits.GuildMessages,
+        GatewayIntentBits.GuildMessageReactions,
+        GatewayIntentBits.DirectMessages,
       ],
+      partials: [Partials.Channel, Partials.Message, Partials.Reaction],
     });
 
     this.ready = new Promise<void>((resolve) => {
@@ -60,5 +63,9 @@ export class DiscordClient {
 
   get guildCount(): number {
     return this.client.guilds.cache.size;
+  }
+
+  get sdk(): Client {
+    return this.client;
   }
 }
