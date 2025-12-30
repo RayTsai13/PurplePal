@@ -1,0 +1,47 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Generated files
+generated/
+
+# Git
+.git/
+.gitignore
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Database files
+*.db
+*.db-journal
+
+# IDE and editor
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Documentation
+*.md
+docs/
+
+# Tests
+src/tests/
+**/*.test.ts
+**/*.spec.ts
+vitest.config.ts
+
+# Development files
+nodemon.json
+.claude/
+CLAUDE.md
+
+# Logs
+*.log
+logs/

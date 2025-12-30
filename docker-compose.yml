@@ -1,0 +1,38 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: purplepal-db
+    environment:
+      POSTGRES_USER: purplepal
+      POSTGRES_PASSWORD: purplepal
+      POSTGRES_DB: purplepal
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U purplepal"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: purplepal-bot
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://purplepal:purplepal@db:5432/purplepal
+      DISCORD_TOKEN: ${DISCORD_TOKEN}
+      DISCORD_APPLICATION_ID: ${DISCORD_APPLICATION_ID}
+      GUILD_ID: ${GUILD_ID}
+      ADMINS_IDS: ${ADMINS_IDS:-}
+      NODE_ENV: production
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
