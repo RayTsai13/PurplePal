@@ -1,39 +1,142 @@
-/**
- * DI Container (wiring point) — Responsibilities:
- * 1) Load config/env (tokens, guild IDs, DB URL, policy paths).
- * 2) Construct infrastructure: logger, Prisma client, Discord client, schedulers.
- * 3) Instantiate adapters/implementations for ports:
- *    - HallService, RoomService, CaseService, DecisionService,
- *      NotificationService, RoleService, AuditService, PolicyService.
- * 4) Wire the VerificationOrchestrator with those services.
- * 5) Expose start/stop hooks for workers (OutboxWorker, TimeoutWorker).
- * 6) Provide a single factory (buildOrchestrator) used by src/index.ts.
- */
+import fs from 'fs';
+import path from 'path';
+import { PrismaClient } from '../../generated/prisma';
+import { DiscordClient } from '../adapters/discord/DiscordClient';
+import { VerificationBot } from '../adapters/discord/VerificationBot';
+import { startOutboxWorker } from '../adapters/scheduler/OutboxWorker';
+import { startTimeoutWorker } from '../adapters/scheduler/TimeoutWorker';
+import type { VerificationOrchestrator } from '../core/application/orchestrator/VerificationOrchestrator';
+import { VerificationOrchestrator as Orchestrator } from '../core/application/orchestrator/VerificationOrchestrator';
+import { logger } from './logger';
+import { env } from './env';
+import { PolicySchema, type PolicyConfig } from './config/policySchema';
+import { HallDirectory } from './services/hallDirectory';
+import { DiscordServiceImpl } from './services/DiscordService';
+import { ConfigImpl } from './services/Config';
+import { PrismaCaseRepository } from './services/prismaCaseService';
+import { PrismaDecisionRepository } from './services/prismaDecisionService';
+import { PrismaAuditRepository } from './services/prismaAuditService';
+import { PrismaOutboxRepository } from './services/prismaOutboxService';
 
-import type { VerificationOrchestrator } from "../core/application/orchestrator/VerificationOrchestrator";
 import type {
-  HallService, RoomService, CaseService, DecisionService,
-  NotificationService, RoleService, AuditService, PolicyService
-} from "../core/application/ports";
-
-// Placeholders for future concrete implementations (adapters)
-type NotWired = never;
+  DiscordService,
+  Config,
+  CaseRepository,
+  DecisionRepository,
+  AuditRepository,
+  OutboxRepository,
+} from '../core/ports';
 
 export interface AppContainer {
-  orchestrator: VerificationOrchestrator; // will be a real instance later
-  // lifecycle hooks to be implemented later:
+  orchestrator: VerificationOrchestrator;
   start: () => Promise<void>;
   stop: () => Promise<void>;
 }
 
-/**
- * Factory that will:
- * - Construct services/adapters
- * - Inject them into VerificationOrchestrator
- * - Return orchestrator + lifecycle hooks
- *
- * For now, it intentionally throws to prevent accidental runtime usage.
- */
 export async function buildOrchestrator(): Promise<AppContainer> {
-  throw new Error("DI container not wired yet (Phase 3). Add implementations, then inject here.");
+  const policyConfig = loadPolicyConfig();
+
+  const prisma = new PrismaClient();
+  const discordClient = new DiscordClient();
+
+  const hallDirectory = new HallDirectory(policyConfig.halls);
+  const services = buildServices(policyConfig, hallDirectory, prisma, discordClient);
+  const orchestrator = new Orchestrator(
+    services.discord,
+    services.config,
+    services.cases,
+    services.decisions,
+    services.audit,
+    services.outbox,
+    logger,
+  );
+  const verificationBot = new VerificationBot(
+    discordClient,
+    orchestrator,
+    services.cases,
+    services.config,
+    services.discord,
+    env.ADMINS_IDS,
+    env.GUILD_ID,
+  );
+  verificationBot.bind();
+
+  const workerHandles: Array<{ stop: () => Promise<void> }> = [];
+
+  const start = async (): Promise<void> => {
+    logger.info("Starting application container");
+    await prisma.$connect();
+
+    workerHandles.push(
+      startOutboxWorker({
+        outbox: services.outbox,
+        notification: services.discord,
+        policy: services.config,
+      }),
+    );
+
+    workerHandles.push(
+      startTimeoutWorker({
+        cases: services.cases,
+        policy: services.config,
+        orchestrator,
+        outbox: services.outbox,
+      }),
+    );
+
+    await discordClient.start(env.DISCORD_TOKEN);
+    logger.info({ guilds: discordClient.guildCount }, "Discord client ready");
+  };
+
+  const stop = async (): Promise<void> => {
+    logger.info("Stopping application container");
+    await Promise.all(workerHandles.map((worker) => worker.stop()));
+    discordClient.shutdown();
+    await prisma.$disconnect();
+  };
+
+  return { orchestrator, start, stop };
+}
+
+function loadPolicyConfig(): PolicyConfig {
+  const policyPath = resolveFromRoot('config/policy.json');
+  const raw = readJson(policyPath);
+  return PolicySchema.parse(raw);
+}
+
+function resolveFromRoot(relative: string): string {
+  return path.resolve(process.cwd(), relative);
+}
+
+function readJson(targetPath: string): Record<string, unknown> {
+  try {
+    const fileContents = fs.readFileSync(targetPath, 'utf-8');
+    return JSON.parse(fileContents);
+  } catch (error) {
+    throw new Error(`Failed to read configuration file at ${targetPath}: ${(error as Error).message}`);
+  }
+}
+
+function buildServices(
+  policy: PolicyConfig,
+  hallDirectory: HallDirectory,
+  prisma: PrismaClient,
+  discordClient: DiscordClient,
+): {
+  discord: DiscordService;
+  config: Config;
+  cases: CaseRepository;
+  decisions: DecisionRepository;
+  audit: AuditRepository;
+  outbox: OutboxRepository;
+} {
+  const discord: DiscordService = new DiscordServiceImpl(discordClient, hallDirectory, env.GUILD_ID);
+  const config: Config = new ConfigImpl(policy);
+
+  const cases: CaseRepository = new PrismaCaseRepository(prisma);
+  const decisions: DecisionRepository = new PrismaDecisionRepository(prisma);
+  const audit: AuditRepository = new PrismaAuditRepository(prisma);
+  const outbox: OutboxRepository = new PrismaOutboxRepository(prisma);
+
+  return { discord, config, cases, decisions, audit, outbox };
 }

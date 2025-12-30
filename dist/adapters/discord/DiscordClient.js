@@ -10,7 +10,10 @@ class DiscordClient {
                 discord_js_1.GatewayIntentBits.Guilds,
                 discord_js_1.GatewayIntentBits.GuildMembers,
                 discord_js_1.GatewayIntentBits.GuildMessages,
+                discord_js_1.GatewayIntentBits.GuildMessageReactions,
+                discord_js_1.GatewayIntentBits.DirectMessages,
             ],
+            partials: [discord_js_1.Partials.Channel, discord_js_1.Partials.Message, discord_js_1.Partials.Reaction],
         });
         this.ready = new Promise((resolve) => {
             this.client.once(discord_js_1.Events.ClientReady, (readyClient) => {
@@ -43,6 +46,9 @@ class DiscordClient {
     }
     get guildCount() {
         return this.client.guilds.cache.size;
+    }
+    get sdk() {
+        return this.client;
     }
 }
 exports.DiscordClient = DiscordClient;
