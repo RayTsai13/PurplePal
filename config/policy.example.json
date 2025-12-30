@@ -1,0 +1,82 @@
+{
+  "term": "Fall 2025",
+  "timeouts": {
+    "awaitingRA_ttl_hours": 72,
+    "reminder_hours": [24]
+  },
+
+  "halls": [
+    {
+      "name": "ExampleHall",
+      "aliases": ["examplehall", "EXAMPLEHALL", "Example"],
+      "raRoleId": "000000000000000001",
+      "queueChannelId": "000000000000000002",
+      "hallRoleId": "000000000000000003",
+      "room": {
+        "pattern": "^E-\\d{3}-[A-D]$",
+        "example": "E-312-A",
+        "normalize": {
+          "uppercase": true,
+          "trimSpaces": true,
+          "fixHyphens": true,
+          "allowMissingHyphens": true,
+          "collapseDelimiters": true
+        }
+      }
+    },
+    {
+      "name": "AnotherHall",
+      "aliases": ["anotherhall", "ANOTHERHALL", "Another"],
+      "raRoleId": "000000000000000004",
+      "queueChannelId": "000000000000000005",
+      "hallRoleId": "000000000000000006",
+      "room": {
+        "pattern": "^A-\\d{3}-[A-D]$",
+        "example": "A-101-B",
+        "normalize": {
+          "uppercase": true,
+          "trimSpaces": true,
+          "fixHyphens": true,
+          "allowMissingHyphens": true,
+          "collapseDelimiters": true
+        }
+      }
+    }
+  ],
+
+  "limits": {
+    "maxNotificationRetries": 5,
+    "notificationBackoffSeconds": [30, 120, 300, 900, 1800],
+    "roleAssignMaxRetries": 3,
+    "roleAssignRetryBackoffSeconds": [10, 30, 60]
+  },
+
+  "features": {
+    "enablePublicFallbackOnDMDenied": false,
+    "enableRAReassign": false
+  },
+
+  "templates": {
+    "dm": {
+      "ask_hall": "Welcome! Which hall are you in? Reply with one of: {{hall_list}}.",
+      "invalid_hall": "\"{{input}}\" isn't a recognized hall. Please enter one of: {{hall_list}}.",
+      "ask_room": "Great — {{hall}}. What's your room? Use the format {{room_example}} (prefix must match your hall and unit is A–D).",
+      "prefix_mismatch": "Your hall is {{hall}}, so the room must start with \"{{hall_prefix}}\". Example: {{room_example}}.",
+      "invalid_room": "That room format doesn't look right. Expected something like {{room_example}} (e.g., E-312-A). Try again.",
+      "await_ra_notice": "Thanks! We've pinged the {{hall}} RA to verify {{room}}. We'll update you here.",
+      "reminder_user": "Still working on it — your {{hall}} verification for {{room}} is awaiting RA review. No action needed from you.",
+      "approved": "✅ Verified for {{hall}} {{room}}. Your access has been upgraded — welcome!",
+      "denied": "❌ Verification was denied by the RA. Reason: {{reason}}. If this seems wrong, reply here.",
+      "expired": "⏳ This request expired after {{ttl_hours}} hours. Start again with {{start_command}}.",
+      "already_in_progress": "You already have a verification in progress for {{term}}. We'll notify you once it's resolved.",
+      "system_error": "We hit a snag processing your request. Please try again shortly."
+    },
+    "ra_queue": {
+      "ra_verify_card_title": "Verify {{user_tag}} — {{hall}} • {{room}}",
+      "ra_verify_card_body": "User: {{user_tag}}\nHall: {{hall}}\nRoom: {{room}}\nPrefix must match hall; unit A–D.\nChoose Approve or Deny below. Your action is logged.",
+      "ra_reminder": "⏰ Reminder: Pending verification for {{user_tag}} — {{hall}} • {{room}}.",
+      "unauthorized_attempt": "⚠️ Blocked unauthorized action by {{actor_tag}} on case {{case_id}}.",
+      "decision_ack": "📝 Recorded {{decision}} by {{actor_tag}} for case {{case_id}}."
+    }
+  }
+}
