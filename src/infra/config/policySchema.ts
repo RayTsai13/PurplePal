@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+// Schema for room normalization options
+// All fields optional with default empty object
 const RoomNormalizeSchema = z
   .object({
     uppercase: z.boolean().optional(),
@@ -10,6 +12,9 @@ const RoomNormalizeSchema = z
   })
   .default({});
 
+// Schema for a single residence hall
+// z.array() validates array of items, .default([]) provides empty array if missing
+// z.record() validates object with dynamic string keys and specific value types
 export const HallSchema = z.object({
   name: z.string(),
   aliases: z.array(z.string()).default([]),
@@ -25,6 +30,10 @@ export const HallSchema = z.object({
     .optional(),
 });
 
+// Complete policy configuration schema
+// z.infer will be used to generate TypeScript types from this schema
+// z.nonempty() ensures at least one hall is configured
+// z.int() requires integer, .nonnegative() requires >= 0
 export const PolicySchema = z.object({
   term: z.string(),
   timeouts: z.object({
@@ -45,6 +54,10 @@ export const PolicySchema = z.object({
   }),
 });
 
+// z.infer<typeof Schema> extracts TypeScript type from Zod schema
+// This ensures types match the validation rules
 export type PolicyConfig = z.infer<typeof PolicySchema>;
+// [number] means take the type of array element (first hall type)
 export type HallConfig = PolicyConfig['halls'][number];
+// NonNullable removes undefined from union type
 export type RoomConfig = NonNullable<HallConfig['room']>;

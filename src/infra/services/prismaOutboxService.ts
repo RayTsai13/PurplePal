@@ -1,11 +1,13 @@
 import { Prisma, PrismaClient, Outbox as PrismaOutbox } from '../../../generated/prisma';
 import type { OutboxJob, OutboxRepository } from '../../core/ports';
 
+// Shape of payload stored in database
 type OutboxPayload = {
   targetId: string;
   data?: Record<string, unknown>;
 };
 
+// Transform Prisma Outbox row to port OutboxJob
 const toJob = (row: PrismaOutbox): OutboxJob => {
   const payloadRaw = row.payload as { targetId: string; data?: Record<string, unknown> | null } | null;
   const payload = payloadRaw
@@ -25,9 +27,12 @@ const toJob = (row: PrismaOutbox): OutboxJob => {
   };
 };
 
+// Prisma repository implementing OutboxRepository port interface
+// Implements reliable message delivery with exponential backoff retries
 export class PrismaOutboxRepository implements OutboxRepository {
   constructor(private readonly prisma: PrismaClient) {}
 
+  // Queue a direct message to user
   async enqueueDM(
     userId: string,
     template: string,
@@ -37,6 +42,7 @@ export class PrismaOutboxRepository implements OutboxRepository {
     await this.enqueue('dm', template, { targetId: userId, data }, options);
   }
 
+  // Queue a message to a channel
   async enqueueChannel(
     channelId: string,
     template: string,
@@ -46,6 +52,9 @@ export class PrismaOutboxRepository implements OutboxRepository {
     await this.enqueue('channel', template, { targetId: channelId, data }, options);
   }
 
+  // Internal method to queue a message
+  // Idempotency key prevents duplicate enqueuing
+  // Catches unique constraint violation (P2002) if message already queued
   private async enqueue(
     kind: 'dm' | 'channel',
     template: string,
@@ -71,6 +80,7 @@ export class PrismaOutboxRepository implements OutboxRepository {
         },
       });
     } catch (error) {
+      // P2002 is unique constraint violation (duplicate idempotency key)
       if (
         options?.idempotencyKey &&
         error instanceof Prisma.PrismaClientKnownRequestError &&
@@ -82,6 +92,10 @@ export class PrismaOutboxRepository implements OutboxRepository {
     }
   }
 
+  // Get pending messages ready to send
+  // OR: [nextAttemptAt: null] (first attempt) OR nextAttemptAt <= now (retry time reached)
+  // Updates nextAttemptAt to delay future attempts (prevents hammering)
+  // Transaction ensures atomicity: fetch and update in one operation
   async takeDue(batchSize: number): Promise<OutboxJob[]> {
     const now = new Date();
     return this.prisma.$transaction(async (tx) => {
@@ -98,6 +112,7 @@ export class PrismaOutboxRepository implements OutboxRepository {
         return [];
       }
 
+      // Lock these messages for 60 seconds by setting nextAttemptAt to future time
       await tx.outbox.updateMany({
         where: { id: { in: rows.map((row) => row.id) } },
         data: { nextAttemptAt: new Date(Date.now() + 60 * 1000) },
@@ -107,6 +122,7 @@ export class PrismaOutboxRepository implements OutboxRepository {
     });
   }
 
+  // Mark message as successfully sent
   async markSent(jobId: string): Promise<void> {
     await this.prisma.outbox.update({
       where: { id: jobId },
@@ -118,6 +134,8 @@ export class PrismaOutboxRepository implements OutboxRepository {
     });
   }
 
+  // Mark message as failed but will retry
+  // Increments attempt counter and schedules next retry
   async markFailed(jobId: string, error: string, retryAt: Date): Promise<void> {
     await this.prisma.outbox.update({
       where: { id: jobId },
@@ -130,6 +148,7 @@ export class PrismaOutboxRepository implements OutboxRepository {
     });
   }
 
+  // Give up on message permanently (exceeded max retries)
   async markPermanentlyFailed(jobId: string, error: string): Promise<void> {
     await this.prisma.outbox.update({
       where: { id: jobId },

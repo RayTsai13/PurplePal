@@ -10,12 +10,11 @@ import type { HallConfig, RoomConfig } from '../config/policySchema';
 import { renderTemplate } from '../utils/template';
 import type { TextBasedChannel } from 'discord.js';
 
+// NonNullable<T> removes null and undefined from type
 interface NormalizeOptions extends NonNullable<RoomConfig['normalize']> {}
 
-/**
- * Unified Discord service combining hall/room validation,
- * notifications, and role management.
- */
+// Unified Discord service implementing DiscordService port interface
+// Handles hall validation, room normalization, notifications, and role management
 export class DiscordServiceImpl implements DiscordService {
   constructor(
     private readonly client: DiscordClient,
@@ -25,6 +24,7 @@ export class DiscordServiceImpl implements DiscordService {
 
   // ==================== Hall Validation ====================
 
+  // Validate hall input and return normalized name with Discord IDs
   async validateHall(hall: string): Promise<HallValidationResult> {
     const match = this.hallDirectory.resolve(hall);
 
@@ -43,6 +43,9 @@ export class DiscordServiceImpl implements DiscordService {
 
   // ==================== Room Normalization ====================
 
+  // Validate and normalize room number against hall pattern
+  // Applies normalization rules (uppercase, trim, fix hyphens, etc)
+  // Returns valid: true with normalized room or valid: false with error messages
   async normalizeRoom(hall: string, roomRaw: string): Promise<RoomNormalizationResult> {
     const hallConfig = this.hallDirectory.getByName(hall) ?? this.hallDirectory.resolve(hall);
     if (!hallConfig) {
@@ -56,6 +59,7 @@ export class DiscordServiceImpl implements DiscordService {
     const normalized = this.applyNormalization(roomRaw, hallConfig);
 
     const pattern = this.compilePattern(hallConfig.room.pattern);
+    // .test() checks if regex matches string
     if (!pattern.test(normalized)) {
       return {
         valid: false,
@@ -66,6 +70,7 @@ export class DiscordServiceImpl implements DiscordService {
     return { valid: true, room: normalized };
   }
 
+  // Compile regex pattern string. Throws if pattern is invalid
   private compilePattern(pattern: string): RegExp {
     try {
       return new RegExp(pattern);
@@ -74,6 +79,8 @@ export class DiscordServiceImpl implements DiscordService {
     }
   }
 
+  // Apply normalization rules to room string based on configuration
+  // .replace(regex, string) replaces all matches
   private applyNormalization(roomRaw: string, hallConfig: HallConfig): string {
     const rules: NormalizeOptions = hallConfig.room?.normalize ?? {};
     let current = roomRaw;
@@ -86,14 +93,17 @@ export class DiscordServiceImpl implements DiscordService {
       current = current.toUpperCase();
     }
 
+    // /[-_\s]+/g matches one or more hyphens, underscores, or spaces
     if (rules.collapseDelimiters) {
       current = current.replace(/[-_\s]+/g, '-');
     }
 
+    // /\s*-\s*/g matches hyphen with optional spaces around it
     if (rules.fixHyphens) {
       current = current.replace(/\s*-\s*/g, '-');
     }
 
+    // /[-\s]+/ matches delimiters, split creates array, join reconstructs with hyphens
     if (rules.allowMissingHyphens) {
       const parts = current.split(/[-\s]+/);
       if (parts.length > 1) {
@@ -110,6 +120,7 @@ export class DiscordServiceImpl implements DiscordService {
 
   // ==================== Notifications ====================
 
+  // Send direct message to user
   async sendDM(
     userId: string,
     template: string,
@@ -121,6 +132,7 @@ export class DiscordServiceImpl implements DiscordService {
     await user.send({ content });
   }
 
+  // Send message to Discord channel
   async sendToQueue(
     channelId: string,
     template: string,
@@ -136,6 +148,8 @@ export class DiscordServiceImpl implements DiscordService {
     await channel.send({ content });
   }
 
+  // Type guard: check if channel is text-based and has send method
+  // as Partial<T> treats value as incomplete version of T for type checking
   private isSendableChannel(channel: unknown): channel is TextBasedChannel & { send: (options: { content: string }) => Promise<unknown> } {
     if (!channel) {
       return false;
@@ -147,6 +161,8 @@ export class DiscordServiceImpl implements DiscordService {
 
   // ==================== Role Management ====================
 
+  // Add Discord roles to user
+  // Catches errors and returns failure result instead of throwing
   async assignRoles(userId: string, roleIds: string[], _idempotencyKey?: string): Promise<RoleOperationResult> {
     try {
       const member = await this.fetchMember(userId);
@@ -157,6 +173,7 @@ export class DiscordServiceImpl implements DiscordService {
     }
   }
 
+  // Remove Discord roles from user
   async removeRoles(userId: string, roleIds: string[], _idempotencyKey?: string): Promise<RoleOperationResult> {
     try {
       const member = await this.fetchMember(userId);
@@ -167,11 +184,14 @@ export class DiscordServiceImpl implements DiscordService {
     }
   }
 
+  // Fetch guild member by user ID
   private async fetchMember(userId: string) {
     const guild = await this.client.sdk.guilds.fetch(this.guildId);
     return guild.members.fetch(userId);
   }
 
+  // Convert error to string message
+  // instanceof checks if value is an instance of class
   private formatError(error: unknown): string {
     if (error instanceof Error) {
       return error.message;

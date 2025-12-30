@@ -1,9 +1,14 @@
 import { Prisma, PrismaClient, CaseState as PrismaCaseState } from '../../../generated/prisma';
 import type { AuditRepository } from '../../core/ports';
 
+// Prisma repository implementing AuditRepository port interface
+// Records immutable audit log for all actions on cases
 export class PrismaAuditRepository implements AuditRepository {
   constructor(private readonly prisma: PrismaClient) {}
 
+  // Log an action to audit trail
+  // All parameters get coerced to database types (undefined becomes null)
+  // Prisma.JsonNull represents JSON null for payload
   async record(
     caseId: string,
     action: string,
@@ -14,6 +19,7 @@ export class PrismaAuditRepository implements AuditRepository {
     payload?: Record<string, unknown>,
     idempotencyKey?: string,
   ): Promise<void> {
+    // Convert undefined payload to null, or keep as JSON-serializable value
     const payloadValue =
       payload === undefined ? undefined : ((payload ?? Prisma.JsonNull) as Prisma.InputJsonValue | typeof Prisma.JsonNull);
 

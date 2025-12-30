@@ -27,12 +27,17 @@ import type {
   OutboxRepository,
 } from '../core/ports';
 
+// Container returns orchestrator plus lifecycle functions
 export interface AppContainer {
   orchestrator: VerificationOrchestrator;
   start: () => Promise<void>;
   stop: () => Promise<void>;
 }
 
+// Dependency injection container. Builds and wires all services together
+// Creates Prisma client, Discord client, loads policy config
+// Instantiates all repositories, services, orchestrator, and bot
+// Returns container with orchestrator and start/stop lifecycle functions
 export async function buildOrchestrator(): Promise<AppContainer> {
   const policyConfig = loadPolicyConfig();
 
@@ -61,12 +66,15 @@ export async function buildOrchestrator(): Promise<AppContainer> {
   );
   verificationBot.bind();
 
+  // Array of worker lifecycle objects that have stop() method
   const workerHandles: Array<{ stop: () => Promise<void> }> = [];
 
+  // Start the application: connect database, start workers, login Discord bot
   const start = async (): Promise<void> => {
     logger.info("Starting application container");
     await prisma.$connect();
 
+    // Start background workers for message and timeout processing
     workerHandles.push(
       startOutboxWorker({
         outbox: services.outbox,
@@ -88,8 +96,10 @@ export async function buildOrchestrator(): Promise<AppContainer> {
     logger.info({ guilds: discordClient.guildCount }, "Discord client ready");
   };
 
+  // Shutdown the application: stop workers, disconnect Discord, close database
   const stop = async (): Promise<void> => {
     logger.info("Stopping application container");
+    // Promise.all runs all in parallel, map returns array of promises, await waits for all
     await Promise.all(workerHandles.map((worker) => worker.stop()));
     discordClient.shutdown();
     await prisma.$disconnect();
@@ -98,16 +108,19 @@ export async function buildOrchestrator(): Promise<AppContainer> {
   return { orchestrator, start, stop };
 }
 
+// Load policy.json from config directory and validate against schema
 function loadPolicyConfig(): PolicyConfig {
   const policyPath = resolveFromRoot('config/policy.json');
   const raw = readJson(policyPath);
   return PolicySchema.parse(raw);
 }
 
+// Convert relative path to absolute path from project root
 function resolveFromRoot(relative: string): string {
   return path.resolve(process.cwd(), relative);
 }
 
+// Read and parse JSON file. Throws if file not found or JSON invalid
 function readJson(targetPath: string): Record<string, unknown> {
   try {
     const fileContents = fs.readFileSync(targetPath, 'utf-8');
@@ -117,6 +130,8 @@ function readJson(targetPath: string): Record<string, unknown> {
   }
 }
 
+// Instantiate all service implementations and wire them together
+// Returns object with all port interface implementations
 function buildServices(
   policy: PolicyConfig,
   hallDirectory: HallDirectory,

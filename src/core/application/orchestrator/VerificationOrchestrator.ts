@@ -10,17 +10,23 @@ import type {
   HallConfig,
 } from '../../ports';
 
+// VerificationOrchestrator is the state machine that controls the entire verification workflow
+// It implements the business logic and decides when to transition states and what side effects happen
+// The private readonly services are injected dependencies (provided by container at startup)
 export class VerificationOrchestrator {
   constructor(
-    private readonly discord: DiscordService,
-    private readonly config: Config,
-    private readonly cases: CaseRepository,
-    private readonly decisions: DecisionRepository,
-    private readonly audit: AuditRepository,
-    private readonly outbox: OutboxRepository,
-    private readonly logger: Logger,
+    private readonly discord: DiscordService,       // handles Discord operations (validation, messaging, roles)
+    private readonly config: Config,                // loads configuration from policy.json
+    private readonly cases: CaseRepository,         // saves/retrieves case data from database
+    private readonly decisions: DecisionRepository, // records RA approval/denial decisions
+    private readonly audit: AuditRepository,        // logs all actions for audit trail
+    private readonly outbox: OutboxRepository,       // queues messages to send to Discord
+    private readonly logger: Logger,                // logging service
   ) {}
 
+  // User initiated /verify command -> create their case in 'joined' state
+  // Transition: none -> joined
+  // If they already have an active case, just notify them instead of creating a new one
   async onUserJoined(userId: string, idempotencyKey: string): Promise<void> {
     const term = this.config.currentTerm();
     const templates = this.config.messaging();
@@ -53,6 +59,9 @@ export class VerificationOrchestrator {
     });
   }
 
+  // User replied with hall name -> validate and transition to 'hall_chosen'
+  // .includes() checks if the value is in the array
+  // Allows retries if they enter an invalid hall before picking a valid one
   async onHallChosen(userId: string, hallInput: string, idempotencyKey: string): Promise<void> {
     const term = this.config.currentTerm();
     const templates = this.config.messaging();
@@ -107,6 +116,8 @@ export class VerificationOrchestrator {
     );
   }
 
+  // User entered their room number - validate against hall pattern and transition to 'awaiting_ra'
+  // Calculates expiration time based on timeout config and notifies RA queue
   async onRoomEntered(userId: string, roomRaw: string, idempotencyKey: string): Promise<void> {
     const term = this.config.currentTerm();
     const templates = this.config.messaging();
@@ -173,6 +184,9 @@ export class VerificationOrchestrator {
     await this.notifyRAQueue(updated, userId, idempotencyKey);
   }
 
+  // RA responded with approve or deny decision
+  // Checks if RA is authorized for this hall before recording decision
+  // Race condition prevention via version check on update
   async onRAResponded(
     caseId: string,
     raUserId: string,
@@ -228,6 +242,7 @@ export class VerificationOrchestrator {
     await this.notifyDecisionAck(updated, raUserId, decision, idempotencyKey);
   }
 
+  // Case has exceeded ttl without RA response. Transition to expired state and notify user
   async expire(caseId: string, idempotencyKey: string): Promise<void> {
     const templates = this.config.messaging();
     const kase = await this.requireCase(caseId);
@@ -272,11 +287,16 @@ export class VerificationOrchestrator {
     return kase;
   }
 
+  // Helper that gets all hall names and joins them into a comma-separated string
+  // .map() transforms array of objects into array of just the names
+  // .join() combines array into single string with separator
   private async hallNames(): Promise<string> {
     const halls = this.config.halls();
     return halls.map((hall) => hall.name).join(', ');
   }
 
+  // Helper that finds a hall config by name, case-insensitive
+  // .find() returns first element matching the condition, or undefined if none found
   private async findHallConfig(name: string): Promise<HallConfig | undefined> {
     const halls = this.config.halls();
     return halls.find((hall) => hall.name.toLowerCase() === name.toLowerCase());
