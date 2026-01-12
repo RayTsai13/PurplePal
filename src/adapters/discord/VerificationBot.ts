@@ -185,7 +185,7 @@ export class VerificationBot {
       return;
     }
 
-    // Route based on case state (joined -> hall_chosen -> awaiting_ra -> decided)
+    // Route based on case state (joined -> hall_chosen -> room_number_entered -> awaiting_ra -> decided)
     if (kase.state === 'joined') {
       // User sends hall name
       await this.orchestrator.onHallChosen(message.author.id, content, message.id);
@@ -193,7 +193,13 @@ export class VerificationBot {
     }
 
     if (kase.state === 'hall_chosen') {
-      // User sends room number/name
+      // User sends room number (step 2 of 3)
+      await this.orchestrator.onRoomNumberEntered(message.author.id, content, message.id);
+      return;
+    }
+
+    if (kase.state === 'room_number_entered') {
+      // User sends unit letter (step 3 of 3)
       await this.orchestrator.onRoomEntered(message.author.id, content, message.id);
       return;
     }

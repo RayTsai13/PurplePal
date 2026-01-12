@@ -2,7 +2,7 @@ import { Prisma, PrismaClient, CaseState as PrismaCaseState, VerificationCase } 
 import type { CaseRecord, CaseRepository, CaseState } from '../../core/ports';
 
 // States where case is still active
-const ACTIVE_STATES: CaseState[] = ['joined', 'hall_chosen', 'awaiting_ra'];
+const ACTIVE_STATES: CaseState[] = ['joined', 'hall_chosen', 'room_number_entered', 'awaiting_ra'];
 
 // Transform Prisma VerificationCase to port CaseRecord
 // ?? converts null to undefined for optional fields
@@ -12,6 +12,7 @@ const toCaseRecord = (kase: VerificationCase): CaseRecord => ({
   term: kase.term,
   state: kase.state as CaseState,
   hall: kase.hall ?? undefined,
+  roomNumber: kase.roomNumber ?? undefined,
   room: kase.room ?? undefined,
   raUserId: kase.raUserId ?? undefined,
   version: kase.version,
@@ -91,6 +92,7 @@ export class PrismaCaseRepository implements CaseRepository {
       // Apply patch fields if provided (only if not undefined)
       if (patch) {
         if (patch.hall !== undefined) data.hall = patch.hall;
+        if (patch.roomNumber !== undefined) data.roomNumber = patch.roomNumber;
         if (patch.room !== undefined) data.room = patch.room;
         if (patch.raUserId !== undefined) data.raUserId = patch.raUserId;
         if (patch.expiresAt !== undefined) data.expiresAt = patch.expiresAt;

@@ -118,23 +118,23 @@ export class VerificationOrchestrator {
 
     await this.outbox.enqueueDM(
       userId,
-      templates.dm.ask_room,
+      templates.dm.ask_room_number,
       {
         hall: hallResult.normalizedHall,
-        room_example: hallConfig?.room?.example ?? 'H-000-A',
+        example: '312',
       },
       { caseId: updated.id, idempotencyKey },
     );
   }
 
-  // User entered their room number - validate against hall pattern and transition to 'awaiting_ra'
-  // Calculates expiration time based on timeout config and notifies RA queue
-  async onRoomEntered(userId: string, roomRaw: string, idempotencyKey: string): Promise<void> {
+  // User entered room number (step 2 of 3) - validate and transition to 'room_number_entered'
+  async onRoomNumberEntered(userId: string, roomNumberRaw: string, idempotencyKey: string): Promise<void> {
     const term = this.config.currentTerm();
     const templates = this.config.messaging();
     const kase = await this.requireActiveCase(userId, term);
 
-    if (kase.state !== 'hall_chosen') {
+    // State guard: only accept from 'hall_chosen' or 'room_number_entered' (allows retries)
+    if (!['hall_chosen', 'room_number_entered'].includes(kase.state)) {
       await this.outbox.enqueueDM(userId, templates.dm.already_in_progress, { term }, {
         caseId: kase.id,
         idempotencyKey,
@@ -150,14 +150,114 @@ export class VerificationOrchestrator {
       return;
     }
 
-    const normalizedRoom = await this.discord.normalizeRoom(kase.hall, roomRaw);
+    // Validate room number is 3 digits
+    const trimmed = roomNumberRaw.trim();
+    const isValid = /^\d{3}$/.test(trimmed);
+
+    if (!isValid) {
+      await this.outbox.enqueueDM(
+        userId,
+        templates.dm.invalid_room_number,
+        { example: '312' },
+        { caseId: kase.id, idempotencyKey },
+      );
+      return;
+    }
+
+    const updated = await this.cases.updateState(kase.id, kase.version, 'room_number_entered', {
+      roomNumber: trimmed,
+    });
+
+    await this.audit.record(
+      updated.id,
+      'room_number_entered',
+      kase.state,
+      updated.state,
+      'user',
+      userId,
+      { roomNumber: trimmed },
+      idempotencyKey,
+    );
+
+    await this.outbox.enqueueDM(
+      userId,
+      templates.dm.ask_unit,
+      { room_number: trimmed },
+      { caseId: updated.id, idempotencyKey },
+    );
+  }
+
+  // User entered unit letter (step 3 of 3) - combine with room number and transition to 'awaiting_ra'
+  // Calculates expiration time based on timeout config and notifies RA queue
+  async onRoomEntered(userId: string, unitRaw: string, idempotencyKey: string): Promise<void> {
+    const term = this.config.currentTerm();
+    const templates = this.config.messaging();
+    const kase = await this.requireActiveCase(userId, term);
+
+    // State guard: ONLY accept from 'room_number_entered' (strict)
+    if (kase.state !== 'room_number_entered') {
+      await this.outbox.enqueueDM(userId, templates.dm.already_in_progress, { term }, {
+        caseId: kase.id,
+        idempotencyKey,
+      });
+      return;
+    }
+
+    if (!kase.hall || !kase.roomNumber) {
+      await this.outbox.enqueueDM(userId, templates.dm.system_error, {}, {
+        caseId: kase.id,
+        idempotencyKey,
+      });
+      return;
+    }
+
+    // Validate unit is single letter A-D
+    const trimmed = unitRaw.trim().toUpperCase();
+    const isValid = /^[A-D]$/.test(trimmed);
+
+    if (!isValid) {
+      await this.outbox.enqueueDM(
+        userId,
+        templates.dm.invalid_unit,
+        { example: 'A' },
+        { caseId: kase.id, idempotencyKey },
+      );
+      return;
+    }
+
+    // Get hall config to determine building prefix
     const hallConfig = await this.findHallConfig(kase.hall);
+    if (!hallConfig?.room?.pattern) {
+      await this.outbox.enqueueDM(userId, templates.dm.system_error, {}, {
+        caseId: kase.id,
+        idempotencyKey,
+      });
+      return;
+    }
+
+    // Extract building prefix from pattern (e.g., "^S-\\d{3}-[A-D]$" → "S")
+    const prefixMatch = hallConfig.room.pattern.match(/^\^([A-Z])-/);
+    const buildingPrefix = prefixMatch ? prefixMatch[1] : null;
+
+    if (!buildingPrefix) {
+      await this.outbox.enqueueDM(userId, templates.dm.system_error, {}, {
+        caseId: kase.id,
+        idempotencyKey,
+      });
+      return;
+    }
+
+    // Construct full room: "S-312-A"
+    const fullRoom = `${buildingPrefix}-${kase.roomNumber}-${trimmed}`;
+
+    // Validate complete room against hall pattern
+    const normalizedRoom = await this.discord.normalizeRoom(kase.hall, fullRoom);
 
     if (!normalizedRoom.valid || !normalizedRoom.room) {
       await this.outbox.enqueueDM(
         userId,
         templates.dm.invalid_room,
-        { room_example: hallConfig?.room?.example ?? 'H-000-A' },
+        { room_example: hallConfig.room.example },
         { caseId: kase.id, idempotencyKey },
       );
       return;

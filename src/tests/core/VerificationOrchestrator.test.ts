@@ -72,6 +72,10 @@ function createMockConfig(): MockedConfig {
         welcome_joined: 'Welcome! Chat in <#{{lobby_channel_id}}> while you verify. Hall: {{hall_list}}',
         ask_hall: 'Please enter your hall name: {{hall_list}}',
         ask_room: 'Please enter your room number for {{hall}}. Example: {{room_example}}',
+        ask_room_number: 'What is your room number? (e.g., {{example}})',
+        invalid_room_number: 'Invalid room number. Expected {{example}}.',
+        ask_unit: 'What is your unit? (A-D)',
+        invalid_unit: 'Invalid unit. Expected {{example}}.',
         already_in_progress: 'You already have a verification in progress for {{term}}.',
         invalid_hall: 'Invalid hall "{{input}}". Available: {{hall_list}}',
         invalid_room: 'Invalid room format. Example: {{room_example}}',
@@ -330,15 +334,16 @@ describe('VerificationOrchestrator', () => {
 
   describe('onRoomEntered', () => {
     it('transitions to awaiting_ra for valid room', async () => {
-      const kase = createCaseRecord({ state: 'hall_chosen', hall: 'North Hall' });
+      const kase = createCaseRecord({ state: 'room_number_entered', hall: 'North Hall', roomNumber: '101' });
       const updatedCase = createCaseRecord({
         state: 'awaiting_ra',
         hall: 'North Hall',
-        room: 'N-101',
+        roomNumber: '101',
+        room: 'N-101-A',
       });
 
       cases.getActiveCase.mockResolvedValue(kase);
-      discord.normalizeRoom.mockResolvedValue({ valid: true, room: 'N-101' });
+      discord.normalizeRoom.mockResolvedValue({ valid: true, room: 'N-101-A' });
       discord.validateHall.mockResolvedValue({
         valid: true,
         normalizedHall: 'North Hall',
@@ -346,51 +351,47 @@ describe('VerificationOrchestrator', () => {
       });
       cases.updateState.mockResolvedValue(updatedCase);
 
-      await orchestrator.onRoomEntered('user-456', 'n-101', 'idem-key-7');
+      await orchestrator.onRoomEntered('user-456', 'A', 'idem-key-7');
 
-      expect(discord.normalizeRoom).toHaveBeenCalledWith('North Hall', 'n-101');
+      expect(discord.normalizeRoom).toHaveBeenCalledWith('North Hall', 'N-101-A');
       expect(cases.updateState).toHaveBeenCalledWith(
         'case-123',
         1,
         'awaiting_ra',
-        expect.objectContaining({ room: 'N-101', expiresAt: expect.any(Date) }),
+        expect.objectContaining({ room: 'N-101-A', expiresAt: expect.any(Date) }),
       );
       expect(audit.record).toHaveBeenCalledWith(
         'case-123',
         'room_entered',
-        'hall_chosen',
+        'room_number_entered',
         'awaiting_ra',
         'user',
         'user-456',
-        { room: 'N-101' },
+        { room: 'N-101-A' },
         'idem-key-7',
       );
     });
 
     it('notifies user for invalid room format', async () => {
-      const kase = createCaseRecord({ state: 'hall_chosen', hall: 'North Hall' });
+      const kase = createCaseRecord({ state: 'room_number_entered', hall: 'North Hall', roomNumber: '101' });
       cases.getActiveCase.mockResolvedValue(kase);
-      discord.normalizeRoom.mockResolvedValue({
-        valid: false,
-        errors: ['Invalid format'],
-      });
 
-      await orchestrator.onRoomEntered('user-456', 'bad-room', 'idem-key-8');
+      await orchestrator.onRoomEntered('user-456', 'Z', 'idem-key-8');
 
       expect(cases.updateState).not.toHaveBeenCalled();
       expect(outbox.enqueueDM).toHaveBeenCalledWith(
         'user-456',
         expect.stringContaining('Invalid'),
-        expect.objectContaining({ room_example: 'N-101' }),
+        expect.objectContaining({ example: 'A' }),
         expect.any(Object),
       );
     });
 
-    it('rejects room entry if not in hall_chosen state', async () => {
+    it('rejects room entry if not in room_number_entered state', async () => {
       const kase = createCaseRecord({ state: 'joined' });
       cases.getActiveCase.mockResolvedValue(kase);
 
-      await orchestrator.onRoomEntered('user-456', 'N-101', 'idem-key-9');
+      await orchestrator.onRoomEntered('user-456', 'A', 'idem-key-9');
 
       expect(cases.updateState).not.toHaveBeenCalled();
       expect(outbox.enqueueDM).toHaveBeenCalledWith(

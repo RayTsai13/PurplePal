@@ -1,5 +1,5 @@
 {
-  "term": "Fall 2025",
+  "term": "Winter 2025",
   "lobbyChannelId": "REPLACE_WITH_LOBBY_CHANNEL_ID",
   "unverifiedRoleId": "REPLACE_WITH_UNVERIFIED_ROLE_ID",
   "timeouts": {
@@ -80,11 +80,13 @@
   "templates": {
     "dm": {
       "welcome_joined": "Welcome to the server! While you complete verification, you can chat in <#{{lobby_channel_id}}>.\n\nPlease reply with your residence hall from: {{hall_list}}.",
-      "ask_hall": "Welcome! Which hall are you in? Reply with one of: {{hall_list}}.",
-      "invalid_hall": "“{{input}}” isn’t a recognized hall. Please enter one of: {{hall_list}}.",
-      "ask_room": "Great — {{hall}}. What’s your room? Use the format {{room_example}} (prefix must match your hall and unit is A–D).",
-      "prefix_mismatch": "Your hall is {{hall}}, so the room must start with “{{hall_prefix}}”. Example: {{room_example}}.",
-      "invalid_room": "That room format doesn’t look right. Expected something like {{room_example}} (e.g., F-312-A). Try again.",
+      "ask_hall": "Welcome! Which hall are you in? Reply with one of: {{hall_list}}. You might find this information on the packet from which your key was delivered.",
+      "invalid_hall": "\"{{input}}\" isn't a recognized hall. Please enter one of: {{hall_list}}.",
+      "ask_room_number": "Got it — {{hall}}. What's your room number? (Just the 3 digits, like {{example}}). You might find this information on the packet from which your key was delivered.",
+      "invalid_room_number": "That doesn't look like a valid room number. Please enter 3 digits (e.g., {{example}}).",
+      "ask_unit": "Thanks! What's your unit letter? (A, B, C, or D). You might find this information on the packet from which your key was delivered.",
+      "invalid_unit": "Unit must be a single letter A-D. Please reply with just the letter (e.g., {{example}}).",
+      "invalid_room": "That room format doesn't look right. Expected something like {{room_example}} (e.g., F-312-A). Try again.",
       "await_ra_notice": "Thanks! We’ve pinged the {{hall}} RA to verify {{room}}. We’ll update you here.",
       "reminder_user": "Still working on it — your {{hall}} verification for {{room}} is awaiting RA review. No action needed from you.",
       "approved": "✅ Verified for {{hall}} {{room}}. Your access has been upgraded — welcome!",
@@ -98,7 +100,7 @@
       "ra_verify_card_body": "User: {{user_tag}}\nHall: {{hall}}\nRoom: {{room}}\nPrefix must match hall; unit A–D.\nChoose Approve or Deny below. Your action is logged.",
       "ra_reminder": "⏰ Reminder: Pending verification for {{user_tag}} — {{hall}} • {{room}}.",
       "unauthorized_attempt": "⚠️ Blocked unauthorized action by {{actor_tag}} on case {{case_id}}.",
-      "decision_ack": "📝 Recorded {{decision}} by {{actor_tag}} for case {{case_id}}."
+      "decision_ack": "Recorded {{decision}} by {{actor_tag}} for case {{case_id}}."
     }
   }
 }

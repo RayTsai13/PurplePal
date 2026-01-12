@@ -6,6 +6,7 @@
 export type CaseState =
   | "joined"
   | "hall_chosen"
+  | "room_number_entered"
   | "awaiting_ra"
   | "approved"
   | "denied"
@@ -17,7 +18,8 @@ export interface CaseRecord {
   term: string;           // academic term (like Fall 2025)
   state: CaseState;       // current state in the verification process
   hall?: string;          // which residence hall - ? means optional (might not have picked yet)
-  room?: string;          // room number - optional
+  roomNumber?: string;    // room number only (e.g., "312") - stored in intermediate state
+  room?: string;          // full room (e.g., "S-312-A") - stored when complete
   raUserId?: string;      // RA who verified them - optional (might not be done yet)
   version: number;        // increments on each update for race condition prevention
   expiresAt?: Date;       // when this case expires - optional. Date is a TypeScript type for timestamps

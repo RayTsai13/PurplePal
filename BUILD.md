@@ -7,28 +7,28 @@ Complete reference for all npm scripts, build processes, and development workflo
 | Script | Command | Purpose |
 |--------|---------|---------|
 | **Development** | | |
-| dev | `npm run dev` | Start bot with hot reload (watches for changes) |
-| start | `npm start` | Build and run bot in production mode |
-| build | `npm run build` | Compile TypeScript to JavaScript in `dist/` |
-| lint | `npm run lint` | Type-check TypeScript without emitting files |
-| test | `npm test` | Run Vitest test suite |
-| health | `npm run health` | Run health check script |
-| **Discord Setup** | | |
-| commands:sync | `npm run commands:sync` | Register `/verify`, `/verify-decision`, `/verify-reset` slash commands with Discord |
-| **Database** | | |
-| db:start | `npm run db:start` | Start PostgreSQL 16 container via Docker Compose |
-| db:stop | `npm run db:stop` | Stop PostgreSQL container |
-| db:reset | `npm run db:reset` | **DESTRUCTIVE** - Delete all data and reinitialize database |
-| db:migrate | `npm run db:migrate` | Apply pending Prisma migrations to database |
-| db:studio | `npm run db:studio` | Open Prisma Studio GUI (visual database browser) |
-| **CLI** | | |
-| cli | `npm run cli -- <command>` | Run admin CLI (case mgmt, config, outbox, system info) |
-| sanity:active-case | `npm run sanity:active-case` | Sanity check for cases in `awaiting_ra` state |
-| **Docker** | | |
-| docker:build | `npm run docker:build` | Build Docker image for bot + database |
-| docker:up | `npm run docker:up` | Start bot + database containers in background |
-| docker:down | `npm run docker:down` | Stop all containers |
-| docker:logs | `npm run docker:logs` | View bot container logs (follow mode) |
+| dev                | `npm run dev`                  | Start bot with hot reload (watches for changes) 
+| start              | `npm start`                    | Build and run bot in production mode 
+| build              | `npm run build`                | Compile TypeScript to JavaScript in `dist/` 
+| lint               | `npm run lint`                 | Type-check TypeScript without emitting files 
+| test               | `npm test`                     | Run Vitest test suite 
+| health              `npm run health`                | Run health check script 
+| **Discord Setup**
+| commands:sync      | `npm run commands:sync`        | Register `/verify`, `/verify-decision`, `/verify-reset` slash commands with Discord 
+| **Database** 
+| db:start           | `npm run db:start`             | Start PostgreSQL 16 container via Docker Compose 
+| db:stop            | `npm run db:stop`              | Stop PostgreSQL container 
+| db:reset           | `npm run db:reset`             | **DESTRUCTIVE** - Delete all data and reinitialize database 
+| db:migrate         | `npm run db:migrate`           | Apply pending Prisma migrations to database 
+| db:studio          | `npm run db:studio`            | Open Prisma Studio GUI (visual database browser) 
+| **CLI**
+| cli                | `npm run cli -- <command>`     | Run admin CLI (case mgmt, config, outbox, system info) 
+| sanity:active-case | `npm run sanity:active-case`   | Sanity check for cases in `awaiting_ra` state          
+| **Docker**
+| docker:build       | `npm run docker:build`         | Build Docker image for bot + database 
+| docker:up          | `npm run docker:up`            | Start bot + database containers in background 
+| docker:down        | `npm run docker:down`          | Stop all containers 
+| docker:logs        | `npm run docker:logs`          | View bot container logs (follow mode) 
 
 ---
 

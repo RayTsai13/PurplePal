@@ -14,6 +14,7 @@ datasource db {
 enum CaseState {
   joined
   hall_chosen
+  room_number_entered
   awaiting_ra
   approved
   denied
@@ -52,6 +53,7 @@ model VerificationCase {
   term      String
   state     CaseState
   hall      String?
+  roomNumber String?
   room      String?
   raUserId  String?
   expiresAt DateTime?
