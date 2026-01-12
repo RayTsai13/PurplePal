@@ -3,25 +3,33 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.registerOutboxCommands = registerOutboxCommands;
 const container_1 = require("../container");
 const output_1 = require("../utils/output");
+// Register outbox (notification queue) management commands (list, inspect, retry, purge-failed)
 function registerOutboxCommands(program) {
+    // Create parent 'outbox' command group for all notification queue subcommands
     const outboxCmd = program
         .command('outbox')
         .description('Notification queue management');
+    // list shows pending and failed messages with filtering and pagination
     outboxCmd
         .command('list')
         .description('List outbox messages')
+        // .option() adds -s or --status flag and -l or --limit flag with default value '20'
         .option('-s, --status <status>', 'Filter by status (pending, sent, failed)')
         .option('-l, --limit <limit>', 'Limit results', '20')
         .action(async (options) => {
         try {
             const { prisma, disconnect } = await (0, container_1.getCliContainer)();
+            // Build where clause dynamically
+            // Record<string, unknown> is a map of string keys to any value type (for flexible filtering)
             const where = {};
             if (options.status) {
                 where.status = options.status;
             }
+            // Find outbox messages matching filter, sorted by next attempt time, limited by count
             const messages = await prisma.outbox.findMany({
                 where,
                 orderBy: { nextAttemptAt: 'asc' },
+                // parseInt converts string limit option to integer for database
                 take: parseInt(options.limit, 10),
             });
             if (messages.length === 0) {
@@ -30,6 +38,9 @@ function registerOutboxCommands(program) {
                 return;
             }
             console.log(`\nFound ${messages.length} message(s):\n`);
+            // .map() transforms each message into [id_truncated, kind, status, attempts, nextAttempt, lastError_truncated] row
+            // .slice(0, 8) truncates ID to first 8 characters for readability
+            // Ternary operator truncates error message if exists, shows "-" if null
             (0, output_1.printTable)(['ID', 'Kind', 'Status', 'Attempts', 'Next Attempt', 'Last Error'], messages.map((m) => [
                 m.id.slice(0, 8) + '...',
                 m.kind,
@@ -45,12 +56,14 @@ function registerOutboxCommands(program) {
             process.exit(1);
         }
     });
+    // inspect shows full details of a specific outbox message including payload
     outboxCmd
         .command('inspect <jobId>')
         .description('View details of a specific outbox message')
         .action(async (jobId) => {
         try {
             const { prisma, disconnect } = await (0, container_1.getCliContainer)();
+            // Look up single message by ID
             const message = await prisma.outbox.findUnique({
                 where: { id: jobId },
             });
@@ -60,6 +73,8 @@ function registerOutboxCommands(program) {
                 process.exit(1);
             }
             console.log('\n=== Outbox Message ===\n');
+            // Display all message metadata fields
+            // || operator shows "-" for optional fields (caseId, lastError, idempotencyKey)
             (0, output_1.printTable)(['Field', 'Value'], [
                 ['ID', message.id],
                 ['Case ID', message.caseId || '-'],
@@ -71,8 +86,10 @@ function registerOutboxCommands(program) {
                 ['Last Error', message.lastError || '-'],
                 ['Idempotency Key', message.idempotencyKey || '-'],
             ]);
+            // If payload exists, print it as formatted JSON
             if (message.payload) {
                 console.log('\nPayload:');
+                // JSON.stringify with null and 2 spaces formats JSON with 2-space indentation
                 console.log(JSON.stringify(message.payload, null, 2));
             }
             await disconnect();
@@ -82,12 +99,14 @@ function registerOutboxCommands(program) {
             process.exit(1);
         }
     });
+    // retry resets a failed or pending message to retry status with immediate delivery
     outboxCmd
         .command('retry <jobId>')
         .description('Retry a failed outbox message')
         .action(async (jobId) => {
         try {
             const { prisma, disconnect } = await (0, container_1.getCliContainer)();
+            // Look up message to check current status
             const message = await prisma.outbox.findUnique({
                 where: { id: jobId },
             });
@@ -96,12 +115,14 @@ function registerOutboxCommands(program) {
                 await disconnect();
                 process.exit(1);
             }
+            // Cannot retry already-sent messages
             if (message.status === 'sent') {
                 (0, output_1.printError)('Message was already sent successfully');
                 await disconnect();
                 process.exit(1);
             }
-            // Reset to pending for immediate retry
+            // Reset message status to pending and clear error, schedule immediate retry
+            // new Date() sets nextAttemptAt to now so OutboxWorker will process it immediately
             await prisma.outbox.update({
                 where: { id: jobId },
                 data: {
@@ -118,13 +139,16 @@ function registerOutboxCommands(program) {
             process.exit(1);
         }
     });
+    // purge-failed deletes all permanently failed messages (requires --yes confirmation)
     outboxCmd
         .command('purge-failed')
         .description('Delete all permanently failed messages')
+        // .option() adds -y or --yes flag to skip confirmation prompt
         .option('-y, --yes', 'Skip confirmation')
         .action(async (options) => {
         try {
             const { prisma, disconnect } = await (0, container_1.getCliContainer)();
+            // Count how many messages are in failed status
             const count = await prisma.outbox.count({
                 where: { status: 'failed' },
             });
@@ -133,11 +157,13 @@ function registerOutboxCommands(program) {
                 await disconnect();
                 return;
             }
+            // If --yes flag not provided, show count and ask user to confirm
             if (!options.yes) {
                 (0, output_1.printInfo)(`Found ${count} failed message(s). Use --yes to confirm deletion.`);
                 await disconnect();
                 return;
             }
+            // Delete all failed messages from outbox table
             await prisma.outbox.deleteMany({
                 where: { status: 'failed' },
             });

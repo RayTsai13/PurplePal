@@ -2,6 +2,8 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.PolicySchema = exports.HallSchema = void 0;
 const zod_1 = require("zod");
+// Schema for room normalization options
+// All fields optional with default empty object
 const RoomNormalizeSchema = zod_1.z
     .object({
     uppercase: zod_1.z.boolean().optional(),
@@ -11,6 +13,9 @@ const RoomNormalizeSchema = zod_1.z
     collapseDelimiters: zod_1.z.boolean().optional(),
 })
     .default({});
+// Schema for a single residence hall
+// z.array() validates array of items, .default([]) provides empty array if missing
+// z.record() validates object with dynamic string keys and specific value types
 exports.HallSchema = zod_1.z.object({
     name: zod_1.z.string(),
     aliases: zod_1.z.array(zod_1.z.string()).default([]),
@@ -25,6 +30,10 @@ exports.HallSchema = zod_1.z.object({
     })
         .optional(),
 });
+// Complete policy configuration schema
+// z.infer will be used to generate TypeScript types from this schema
+// z.nonempty() ensures at least one hall is configured
+// z.int() requires integer, .nonnegative() requires >= 0
 exports.PolicySchema = zod_1.z.object({
     term: zod_1.z.string(),
     timeouts: zod_1.z.object({

@@ -10,7 +10,7 @@ The codebase follows hexagonal architecture (ports and adapters pattern) to sepa
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│                  External World                      │
+│                  External World                     │
 │  (Discord API, Database, File System)               │
 └──────────────────┬──────────────────────────────────┘
                    │

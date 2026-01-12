@@ -6,6 +6,7 @@ import { registerCaseCommands } from './commands/case';
 import { registerSystemCommands } from './commands/system';
 import { registerOutboxCommands } from './commands/outbox';
 import { registerConfigCommands } from './commands/config';
+import { startREPL } from './repl';
 
 // Load environment variables from .env file
 import 'dotenv/config';
@@ -18,6 +19,15 @@ program
   .name('purplepal')
   .description('PurplePal CLI - Admin tools for the verification bot')
   .version('1.0.0');
+
+// Add interactive mode command
+program
+  .command('interactive')
+  .alias('i')
+  .description('Start interactive REPL mode')
+  .action(async () => {
+    await startREPL();
+  });
 
 // Register all command modules
 registerCaseCommands(program);

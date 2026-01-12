@@ -172,6 +172,27 @@ npm run cli -- case list-pending   # Show pending cases
 npm run cli -- case inspect <id>   # View case details
 npm run cli -- outbox list         # Check notification queue
 npm run cli -- config show         # Display configuration
+
+# Interactive mode (run multiple commands without repeating prefix)
+npm run cli -- interactive
+# or
+npm run cli -- i
+```
+
+### Interactive Mode
+
+Start an interactive session where you can run commands directly:
+
+```
+$ npm run cli -- interactive
+
+PurplePal CLI - Interactive Mode
+Type "help" for available commands or "exit" to quit
+
+purplepal> status
+purplepal> case list-pending
+purplepal> config show
+purplepal> exit
 ```
 
 ### Available Commands:

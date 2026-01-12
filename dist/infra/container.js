@@ -22,6 +22,10 @@ const prismaCaseService_1 = require("./services/prismaCaseService");
 const prismaDecisionService_1 = require("./services/prismaDecisionService");
 const prismaAuditService_1 = require("./services/prismaAuditService");
 const prismaOutboxService_1 = require("./services/prismaOutboxService");
+// Dependency injection container. Builds and wires all services together
+// Creates Prisma client, Discord client, loads policy config
+// Instantiates all repositories, services, orchestrator, and bot
+// Returns container with orchestrator and start/stop lifecycle functions
 async function buildOrchestrator() {
     const policyConfig = loadPolicyConfig();
     const prisma = new prisma_1.PrismaClient();
@@ -31,10 +35,13 @@ async function buildOrchestrator() {
     const orchestrator = new VerificationOrchestrator_1.VerificationOrchestrator(services.discord, services.config, services.cases, services.decisions, services.audit, services.outbox, logger_1.logger);
     const verificationBot = new VerificationBot_1.VerificationBot(discordClient, orchestrator, services.cases, services.config, services.discord, env_1.env.ADMINS_IDS, env_1.env.GUILD_ID);
     verificationBot.bind();
+    // Array of worker lifecycle objects that have stop() method
     const workerHandles = [];
+    // Start the application: connect database, start workers, login Discord bot
     const start = async () => {
         logger_1.logger.info("Starting application container");
         await prisma.$connect();
+        // Start background workers for message and timeout processing
         workerHandles.push((0, OutboxWorker_1.startOutboxWorker)({
             outbox: services.outbox,
             notification: services.discord,
@@ -49,22 +56,27 @@ async function buildOrchestrator() {
         await discordClient.start(env_1.env.DISCORD_TOKEN);
         logger_1.logger.info({ guilds: discordClient.guildCount }, "Discord client ready");
     };
+    // Shutdown the application: stop workers, disconnect Discord, close database
     const stop = async () => {
         logger_1.logger.info("Stopping application container");
+        // Promise.all runs all in parallel, map returns array of promises, await waits for all
         await Promise.all(workerHandles.map((worker) => worker.stop()));
         discordClient.shutdown();
         await prisma.$disconnect();
     };
     return { orchestrator, start, stop };
 }
+// Load policy.json from config directory and validate against schema
 function loadPolicyConfig() {
     const policyPath = resolveFromRoot('config/policy.json');
     const raw = readJson(policyPath);
     return policySchema_1.PolicySchema.parse(raw);
 }
+// Convert relative path to absolute path from project root
 function resolveFromRoot(relative) {
     return path_1.default.resolve(process.cwd(), relative);
 }
+// Read and parse JSON file. Throws if file not found or JSON invalid
 function readJson(targetPath) {
     try {
         const fileContents = fs_1.default.readFileSync(targetPath, 'utf-8');
@@ -74,6 +86,8 @@ function readJson(targetPath) {
         throw new Error(`Failed to read configuration file at ${targetPath}: ${error.message}`);
     }
 }
+// Instantiate all service implementations and wire them together
+// Returns object with all port interface implementations
 function buildServices(policy, hallDirectory, prisma, discordClient) {
     const discord = new DiscordService_1.DiscordServiceImpl(discordClient, hallDirectory, env_1.env.GUILD_ID);
     const config = new Config_1.ConfigImpl(policy);
