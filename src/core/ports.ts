@@ -69,6 +69,12 @@ export interface Config {
   messaging(): MessageTemplates;  // returns MessageTemplates interface
   halls(): HallConfig[];          // [] means returns an array of HallConfig
 
+  // Lobby channel where unverified users can chat while awaiting verification
+  lobbyChannelId(): string | undefined;
+
+  // Role assigned to new members until they complete verification
+  unverifiedRoleId(): string | undefined;
+
   // Reload configuration from disk without restarting the application
   // Returns Promise<void> to indicate async file read operation
   reload(): Promise<void>;

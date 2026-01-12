@@ -69,6 +69,7 @@ function createMockConfig(): MockedConfig {
     }),
     messaging: vi.fn().mockReturnValue({
       dm: {
+        welcome_joined: 'Welcome! Chat in <#{{lobby_channel_id}}> while you verify. Hall: {{hall_list}}',
         ask_hall: 'Please enter your hall name: {{hall_list}}',
         ask_room: 'Please enter your room number for {{hall}}. Example: {{room_example}}',
         already_in_progress: 'You already have a verification in progress for {{term}}.',
@@ -97,6 +98,8 @@ function createMockConfig(): MockedConfig {
         room: { pattern: '^N-\\d{3}$', example: 'N-101' },
       },
     ] as HallConfig[]),
+    lobbyChannelId: vi.fn().mockReturnValue('lobby-channel-123'),
+    unverifiedRoleId: vi.fn().mockReturnValue('unverified-role-456'),
     reload: vi.fn(),
   };
 }

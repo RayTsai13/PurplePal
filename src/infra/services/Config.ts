@@ -81,6 +81,16 @@ export class ConfigImpl implements Config {
     }));
   }
 
+  // Return lobby channel ID where unverified users can chat
+  lobbyChannelId(): string | undefined {
+    return this.policy.lobbyChannelId;
+  }
+
+  // Return unverified role ID assigned to new members
+  unverifiedRoleId(): string | undefined {
+    return this.policy.unverifiedRoleId;
+  }
+
   // Reload configuration from disk without restarting the application
   // Re-reads and validates policy.json, then notifies all registered listeners
   async reload(): Promise<void> {

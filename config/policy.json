@@ -1,5 +1,7 @@
 {
   "term": "Fall 2025",
+  "lobbyChannelId": "REPLACE_WITH_LOBBY_CHANNEL_ID",
+  "unverifiedRoleId": "REPLACE_WITH_UNVERIFIED_ROLE_ID",
   "timeouts": {
     "awaitingRA_ttl_hours": 72,
     "reminder_hours": [24]
@@ -77,6 +79,7 @@
 
   "templates": {
     "dm": {
+      "welcome_joined": "Welcome to the server! While you complete verification, you can chat in <#{{lobby_channel_id}}>.\n\nPlease reply with your residence hall from: {{hall_list}}.",
       "ask_hall": "Welcome! Which hall are you in? Reply with one of: {{hall_list}}.",
       "invalid_hall": "“{{input}}” isn’t a recognized hall. Please enter one of: {{hall_list}}.",
       "ask_room": "Great — {{hall}}. What’s your room? Use the format {{room_example}} (prefix must match your hall and unit is A–D).",

@@ -1,6 +1,7 @@
 import {
   ChannelType,
   Events,
+  GuildMember,
   Interaction,
   ChatInputCommandInteraction,
   Message,
@@ -61,6 +62,15 @@ export class VerificationBot {
         await this.handleReaction(reaction, user);
       } catch (err) {
         logger.error({ err }, 'Failed to handle reaction');
+      }
+    });
+
+    // Handle new members joining the server - auto-trigger verification
+    client.on(Events.GuildMemberAdd, async (member) => {
+      try {
+        await this.handleMemberJoin(member);
+      } catch (err) {
+        logger.error({ err, memberId: member.id }, 'Failed to handle member join');
       }
     });
   }
@@ -207,6 +217,31 @@ export class VerificationBot {
     await this.cases.resetCase(interaction.user.id, term);
 
     await interaction.editReply('Your verification flow has been reset. Run /verify to start again.');
+  }
+
+  // Handle new member joining the server - auto-trigger verification
+  private async handleMemberJoin(member: GuildMember): Promise<void> {
+    // Skip bots - they don't need verification
+    if (member.user.bot) {
+      return;
+    }
+
+    logger.info({ memberId: member.id, guildId: member.guild.id }, 'Auto-triggering verification for new member');
+
+    // Assign unverified role if configured (restricts channel access until verified)
+    const unverifiedRoleId = this.config.unverifiedRoleId();
+    if (unverifiedRoleId) {
+      try {
+        await this.hallService.assignRoles(member.id, [unverifiedRoleId], `join-${member.id}`);
+        logger.info({ memberId: member.id, roleId: unverifiedRoleId }, 'Assigned unverified role to new member');
+      } catch (err) {
+        logger.error({ err, memberId: member.id }, 'Failed to assign unverified role');
+        // Continue with verification even if role assignment fails
+      }
+    }
+
+    // Trigger verification workflow - creates case and sends DM asking for hall
+    await this.orchestrator.onUserJoined(member.id, `join-${member.id}-${Date.now()}`);
   }
 
   // Check if user is moderator (has full permissions regardless of hall)

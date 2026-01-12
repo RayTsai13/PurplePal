@@ -36,6 +36,8 @@ export const HallSchema = z.object({
 // z.int() requires integer, .nonnegative() requires >= 0
 export const PolicySchema = z.object({
   term: z.string(),
+  lobbyChannelId: z.string().optional(),    // Channel where unverified users can chat
+  unverifiedRoleId: z.string().optional(),  // Role assigned to new members until verified
   timeouts: z.object({
     awaitingRA_ttl_hours: z.number().nonnegative(),
     reminder_hours: z.array(z.number().nonnegative()),

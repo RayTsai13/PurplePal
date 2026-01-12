@@ -53,7 +53,18 @@ export class VerificationOrchestrator {
     );
 
     const hallList = await this.hallNames();
-    await this.outbox.enqueueDM(userId, templates.dm.ask_hall, { hall_list: hallList }, {
+    const lobbyChannelId = this.config.lobbyChannelId();
+
+    // Use welcome_joined template if lobby channel is configured (includes lobby channel mention)
+    // Otherwise fall back to standard ask_hall template
+    const template = lobbyChannelId && templates.dm.welcome_joined
+      ? templates.dm.welcome_joined
+      : templates.dm.ask_hall;
+
+    await this.outbox.enqueueDM(userId, template, {
+      hall_list: hallList,
+      lobby_channel_id: lobbyChannelId ?? '',
+    }, {
       caseId: kase.id,
       idempotencyKey,
     });
@@ -370,7 +381,14 @@ export class VerificationOrchestrator {
       return;
     }
 
+    // Assign the hall role to grant access
     await this.discord.assignRoles(kase.userId, [hallDetails.hallRoleId], idempotencyKey);
+
+    // Remove unverified role if configured (unlocks full channel access)
+    const unverifiedRoleId = this.config.unverifiedRoleId();
+    if (unverifiedRoleId) {
+      await this.discord.removeRoles(kase.userId, [unverifiedRoleId], idempotencyKey);
+    }
   }
 
   private async notifyUnauthorized(
