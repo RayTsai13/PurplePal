@@ -3,12 +3,12 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.registerConfigCommands = registerConfigCommands;
 const container_1 = require("../container");
 const output_1 = require("../utils/output");
-// Register configuration viewing commands (show, halls, templates)
+// Register configuration viewing commands (show, halls, templates, reload)
 function registerConfigCommands(program) {
     // Create parent 'config' command group for all configuration subcommands
     const configCmd = program
         .command('config')
-        .description('Configuration viewing');
+        .description('Configuration viewing and management');
     // show displays main configuration settings (timeouts, limits, halls overview)
     configCmd
         .command('show')
@@ -117,6 +117,39 @@ function registerConfigCommands(program) {
         }
         catch (error) {
             (0, output_1.printError)(`Failed to show templates: ${error.message}`);
+            process.exit(1);
+        }
+    });
+    // reload reloads configuration from disk without restarting the application
+    // Note: This only reloads the CLI's view of config. The running bot process
+    // must call reload() on its own ConfigImpl instance to pick up changes.
+    configCmd
+        .command('reload')
+        .description('Reload configuration from disk (validates policy.json)')
+        .action(async () => {
+        try {
+            const { configImpl, disconnect } = await (0, container_1.getCliContainer)();
+            console.log('Reloading configuration from disk...\n');
+            // Store old values for comparison
+            const oldTerm = configImpl.currentTerm();
+            const oldHallCount = configImpl.halls().length;
+            // Trigger reload - this re-reads and validates policy.json
+            await configImpl.reload();
+            // Display new configuration summary
+            const newTerm = configImpl.currentTerm();
+            const newHalls = configImpl.halls();
+            (0, output_1.printSuccess)('Configuration reloaded successfully');
+            console.log();
+            (0, output_1.printTable)(['Setting', 'Before', 'After'], [
+                ['Term', oldTerm, newTerm],
+                ['Hall Count', oldHallCount.toString(), newHalls.length.toString()],
+            ]);
+            console.log('\nConfigured Halls:');
+            (0, output_1.printTable)(['Name', 'Aliases'], newHalls.map((h) => [h.name, h.aliases.join(', ') || '-']));
+            await disconnect();
+        }
+        catch (error) {
+            (0, output_1.printError)(`Failed to reload config: ${error.message}`);
             process.exit(1);
         }
     });

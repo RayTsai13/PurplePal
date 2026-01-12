@@ -1,12 +1,24 @@
 "use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ConfigImpl = void 0;
+const fs_1 = __importDefault(require("fs"));
+const path_1 = __importDefault(require("path"));
+const policySchema_1 = require("../config/policySchema");
 // Synchronous configuration service implementing Config port interface
-// Config is loaded at startup from policy.json and doesn't change
-// private readonly means the policy cannot be modified after construction
+// Supports hot reload via reload() method
 class ConfigImpl {
-    constructor(policy) {
-        this.policy = policy;
+    constructor(initialPolicy, configPath) {
+        this.listeners = [];
+        this.policy = initialPolicy;
+        // Default path resolves to config/policy.json from project root
+        this.configPath = configPath ?? path_1.default.resolve(process.cwd(), 'config/policy.json');
+    }
+    // Register a listener to be called when configuration reloads
+    onReload(listener) {
+        this.listeners.push(listener);
     }
     // Return current academic term
     currentTerm() {
@@ -52,6 +64,18 @@ class ConfigImpl {
                 }
                 : undefined,
         }));
+    }
+    // Reload configuration from disk without restarting the application
+    // Re-reads and validates policy.json, then notifies all registered listeners
+    async reload() {
+        const fileContents = await fs_1.default.promises.readFile(this.configPath, 'utf-8');
+        const raw = JSON.parse(fileContents);
+        const newPolicy = policySchema_1.PolicySchema.parse(raw);
+        this.policy = newPolicy;
+        // Notify all listeners about the configuration change
+        for (const listener of this.listeners) {
+            listener(newPolicy);
+        }
     }
 }
 exports.ConfigImpl = ConfigImpl;

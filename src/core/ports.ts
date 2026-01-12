@@ -68,6 +68,10 @@ export interface Config {
   limits(): LimitsConfig;         // returns LimitsConfig interface
   messaging(): MessageTemplates;  // returns MessageTemplates interface
   halls(): HallConfig[];          // [] means returns an array of HallConfig
+
+  // Reload configuration from disk without restarting the application
+  // Returns Promise<void> to indicate async file read operation
+  reload(): Promise<void>;
 }
 
 // ==================== Discord Operations ====================
@@ -118,6 +122,10 @@ export interface DiscordService {
   // roleIds: string[] = array of Discord role IDs ([] is array syntax)
   assignRoles(userId: string, roleIds: string[], idempotencyKey?: string): Promise<RoleOperationResult>;
   removeRoles(userId: string, roleIds: string[], idempotencyKey?: string): Promise<RoleOperationResult>;
+
+  // Check if a user has the RA role for a specific hall
+  // Used for authorization before processing RA decisions
+  isRaForHall(userId: string, hallName: string): Promise<boolean>;
 }
 
 // ==================== Data Repositories ====================
@@ -153,9 +161,6 @@ export interface CaseRepository {
 
 // DecisionRepository saves RA approve/deny decisions
 export interface DecisionRepository {
-  // { hall?: string; userId: string } = inline object type (has optional hall field and required userId)
-  authorize(raUserId: string, kase: { hall?: string; userId: string }): Promise<boolean>;
-
   // "approve" | "deny" = must be one of these two exact string values
   recordDecision(
     caseId: string,

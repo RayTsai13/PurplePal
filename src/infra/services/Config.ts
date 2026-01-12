@@ -1,3 +1,5 @@
+import fs from 'fs';
+import path from 'path';
 import type {
   Config,
   HallConfig,
@@ -5,13 +7,29 @@ import type {
   MessageTemplates,
   TimeoutConfig,
 } from '../../core/ports';
-import type { PolicyConfig } from '../config/policySchema';
+import { PolicySchema, type PolicyConfig } from '../config/policySchema';
+
+// Callback type for reload notifications
+// Allows dependent services (like HallDirectory) to be notified when config changes
+export type ConfigReloadListener = (newConfig: PolicyConfig) => void;
 
 // Synchronous configuration service implementing Config port interface
-// Config is loaded at startup from policy.json and doesn't change
-// private readonly means the policy cannot be modified after construction
+// Supports hot reload via reload() method
 export class ConfigImpl implements Config {
-  constructor(private readonly policy: PolicyConfig) {}
+  private policy: PolicyConfig;
+  private readonly configPath: string;
+  private readonly listeners: ConfigReloadListener[] = [];
+
+  constructor(initialPolicy: PolicyConfig, configPath?: string) {
+    this.policy = initialPolicy;
+    // Default path resolves to config/policy.json from project root
+    this.configPath = configPath ?? path.resolve(process.cwd(), 'config/policy.json');
+  }
+
+  // Register a listener to be called when configuration reloads
+  onReload(listener: ConfigReloadListener): void {
+    this.listeners.push(listener);
+  }
 
   // Return current academic term
   currentTerm(): string {
@@ -61,5 +79,20 @@ export class ConfigImpl implements Config {
           }
         : undefined,
     }));
+  }
+
+  // Reload configuration from disk without restarting the application
+  // Re-reads and validates policy.json, then notifies all registered listeners
+  async reload(): Promise<void> {
+    const fileContents = await fs.promises.readFile(this.configPath, 'utf-8');
+    const raw = JSON.parse(fileContents);
+    const newPolicy = PolicySchema.parse(raw);
+
+    this.policy = newPolicy;
+
+    // Notify all listeners about the configuration change
+    for (const listener of this.listeners) {
+      listener(newPolicy);
+    }
   }
 }

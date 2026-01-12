@@ -27,11 +27,17 @@ const prismaOutboxService_1 = require("./services/prismaOutboxService");
 // Instantiates all repositories, services, orchestrator, and bot
 // Returns container with orchestrator and start/stop lifecycle functions
 async function buildOrchestrator() {
-    const policyConfig = loadPolicyConfig();
+    const { policyConfig, configPath } = loadPolicyConfig();
     const prisma = new prisma_1.PrismaClient();
     const discordClient = new DiscordClient_1.DiscordClient();
     const hallDirectory = new hallDirectory_1.HallDirectory(policyConfig.halls);
-    const services = buildServices(policyConfig, hallDirectory, prisma, discordClient);
+    const services = buildServices(policyConfig, configPath, hallDirectory, prisma, discordClient);
+    // Wire up HallDirectory to rebuild when config is hot-reloaded
+    // ConfigImpl.onReload registers a callback that will be invoked on reload()
+    services.config.onReload((newPolicy) => {
+        hallDirectory.rebuild(newPolicy.halls);
+        logger_1.logger.info('HallDirectory rebuilt after config reload');
+    });
     const orchestrator = new VerificationOrchestrator_1.VerificationOrchestrator(services.discord, services.config, services.cases, services.decisions, services.audit, services.outbox, logger_1.logger);
     const verificationBot = new VerificationBot_1.VerificationBot(discordClient, orchestrator, services.cases, services.config, services.discord, env_1.env.ADMINS_IDS, env_1.env.GUILD_ID);
     verificationBot.bind();
@@ -67,10 +73,12 @@ async function buildOrchestrator() {
     return { orchestrator, start, stop };
 }
 // Load policy.json from config directory and validate against schema
+// Returns both the config and the path for hot-reload capability
 function loadPolicyConfig() {
-    const policyPath = resolveFromRoot('config/policy.json');
-    const raw = readJson(policyPath);
-    return policySchema_1.PolicySchema.parse(raw);
+    const configPath = resolveFromRoot('config/policy.json');
+    const raw = readJson(configPath);
+    const policyConfig = policySchema_1.PolicySchema.parse(raw);
+    return { policyConfig, configPath };
 }
 // Convert relative path to absolute path from project root
 function resolveFromRoot(relative) {
@@ -88,9 +96,9 @@ function readJson(targetPath) {
 }
 // Instantiate all service implementations and wire them together
 // Returns object with all port interface implementations
-function buildServices(policy, hallDirectory, prisma, discordClient) {
+function buildServices(policy, configPath, hallDirectory, prisma, discordClient) {
     const discord = new DiscordService_1.DiscordServiceImpl(discordClient, hallDirectory, env_1.env.GUILD_ID);
-    const config = new Config_1.ConfigImpl(policy);
+    const config = new Config_1.ConfigImpl(policy, configPath);
     const cases = new prismaCaseService_1.PrismaCaseRepository(prisma);
     const decisions = new prismaDecisionService_1.PrismaDecisionRepository(prisma);
     const audit = new prismaAuditService_1.PrismaAuditRepository(prisma);

@@ -39,13 +39,20 @@ export interface AppContainer {
 // Instantiates all repositories, services, orchestrator, and bot
 // Returns container with orchestrator and start/stop lifecycle functions
 export async function buildOrchestrator(): Promise<AppContainer> {
-  const policyConfig = loadPolicyConfig();
+  const { policyConfig, configPath } = loadPolicyConfig();
 
   const prisma = new PrismaClient();
   const discordClient = new DiscordClient();
 
   const hallDirectory = new HallDirectory(policyConfig.halls);
-  const services = buildServices(policyConfig, hallDirectory, prisma, discordClient);
+  const services = buildServices(policyConfig, configPath, hallDirectory, prisma, discordClient);
+
+  // Wire up HallDirectory to rebuild when config is hot-reloaded
+  // ConfigImpl.onReload registers a callback that will be invoked on reload()
+  (services.config as ConfigImpl).onReload((newPolicy) => {
+    hallDirectory.rebuild(newPolicy.halls);
+    logger.info('HallDirectory rebuilt after config reload');
+  });
   const orchestrator = new Orchestrator(
     services.discord,
     services.config,
@@ -109,10 +116,12 @@ export async function buildOrchestrator(): Promise<AppContainer> {
 }
 
 // Load policy.json from config directory and validate against schema
-function loadPolicyConfig(): PolicyConfig {
-  const policyPath = resolveFromRoot('config/policy.json');
-  const raw = readJson(policyPath);
-  return PolicySchema.parse(raw);
+// Returns both the config and the path for hot-reload capability
+function loadPolicyConfig(): { policyConfig: PolicyConfig; configPath: string } {
+  const configPath = resolveFromRoot('config/policy.json');
+  const raw = readJson(configPath);
+  const policyConfig = PolicySchema.parse(raw);
+  return { policyConfig, configPath };
 }
 
 // Convert relative path to absolute path from project root
@@ -134,6 +143,7 @@ function readJson(targetPath: string): Record<string, unknown> {
 // Returns object with all port interface implementations
 function buildServices(
   policy: PolicyConfig,
+  configPath: string,
   hallDirectory: HallDirectory,
   prisma: PrismaClient,
   discordClient: DiscordClient,
@@ -146,7 +156,7 @@ function buildServices(
   outbox: OutboxRepository;
 } {
   const discord: DiscordService = new DiscordServiceImpl(discordClient, hallDirectory, env.GUILD_ID);
-  const config: Config = new ConfigImpl(policy);
+  const config: Config = new ConfigImpl(policy, configPath);
 
   const cases: CaseRepository = new PrismaCaseRepository(prisma);
   const decisions: DecisionRepository = new PrismaDecisionRepository(prisma);

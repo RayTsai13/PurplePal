@@ -13,18 +13,6 @@ class PrismaDecisionRepository {
     constructor(prisma) {
         this.prisma = prisma;
     }
-    // Check if RA is authorized to decide on this case
-    // Currently checks: hall exists and RA is not the user applying
-    // TODO: integrate Discord role checks once guild context is available
-    async authorize(raUserId, kase) {
-        if (!kase.hall) {
-            return false;
-        }
-        if (raUserId === kase.userId) {
-            return false;
-        }
-        return true;
-    }
     // Record RA decision (approve or deny)
     // upsert: update if exists, create if doesn't (idempotency key prevents duplicates)
     async recordDecision(caseId, raUserId, decision, reason, idempotencyKey) {

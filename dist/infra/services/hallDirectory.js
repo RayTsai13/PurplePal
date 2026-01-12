@@ -6,11 +6,23 @@ const normalizeKey = (value) => value.trim().toLowerCase();
 // In-memory hall lookup service
 // Builds two Maps at startup: one for canonical names, one for alias resolution
 // Allows case-insensitive hall resolution via aliases
+// Supports hot reload via rebuild() method
 class HallDirectory {
     // Constructor builds lookup tables from hall configuration
     constructor(halls) {
         this.canonicalByKey = new Map();
         this.aliasLookup = new Map();
+        this.buildLookupTables(halls);
+    }
+    // Rebuild lookup tables with new hall configuration
+    // Called when config is hot-reloaded to update the directory
+    rebuild(halls) {
+        this.canonicalByKey.clear();
+        this.aliasLookup.clear();
+        this.buildLookupTables(halls);
+    }
+    // Build the lookup tables from hall configuration
+    buildLookupTables(halls) {
         // forEach iterates over array, .set() adds to Map
         halls.forEach((hall) => {
             const canonicalKey = normalizeKey(hall.name);

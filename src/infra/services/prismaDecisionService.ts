@@ -10,21 +10,6 @@ const ensureIdempotencyKey = (provided?: string): string => provided ?? crypto.r
 export class PrismaDecisionRepository implements DecisionRepository {
   constructor(private readonly prisma: PrismaClient) {}
 
-  // Check if RA is authorized to decide on this case
-  // Currently checks: hall exists and RA is not the user applying
-  // TODO: integrate Discord role checks once guild context is available
-  async authorize(raUserId: string, kase: { hall?: string; userId: string }): Promise<boolean> {
-    if (!kase.hall) {
-      return false;
-    }
-
-    if (raUserId === kase.userId) {
-      return false;
-    }
-
-    return true;
-  }
-
   // Record RA decision (approve or deny)
   // upsert: update if exists, create if doesn't (idempotency key prevents duplicates)
   async recordDecision(

@@ -201,8 +201,21 @@ export class VerificationOrchestrator {
       return;
     }
 
-    const authorized = await this.decisions.authorize(raUserId, { hall: kase.hall, userId: kase.userId });
-    if (!authorized) {
+    // Authorization checks:
+    // 1. RA cannot verify themselves
+    // 2. RA must have the appropriate role for this hall
+    if (raUserId === kase.userId) {
+      await this.notifyUnauthorized(kase, raUserId, idempotencyKey);
+      return;
+    }
+
+    if (!kase.hall) {
+      await this.notifyUnauthorized(kase, raUserId, idempotencyKey);
+      return;
+    }
+
+    const isAuthorizedRa = await this.discord.isRaForHall(raUserId, kase.hall);
+    if (!isAuthorizedRa) {
       await this.notifyUnauthorized(kase, raUserId, idempotencyKey);
       return;
     }

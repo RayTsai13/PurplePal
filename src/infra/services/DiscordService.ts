@@ -198,4 +198,24 @@ export class DiscordServiceImpl implements DiscordService {
     }
     return 'Unknown Discord error';
   }
+
+  // ==================== Authorization ====================
+
+  // Check if user has the RA role for a specific hall
+  // Used for authorization before processing RA decisions
+  async isRaForHall(userId: string, hallName: string): Promise<boolean> {
+    const hallConfig = this.hallDirectory.getByName(hallName) ?? this.hallDirectory.resolve(hallName);
+    if (!hallConfig) {
+      return false;
+    }
+
+    try {
+      const member = await this.fetchMember(userId);
+      // member.roles.cache is a Collection of roles, .has() checks if role ID exists
+      return member.roles.cache.has(hallConfig.raRoleId);
+    } catch {
+      // Member not found or other Discord error - deny authorization
+      return false;
+    }
+  }
 }

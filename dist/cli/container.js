@@ -24,10 +24,11 @@ async function getCliContainer() {
     if (container) {
         return container;
     }
-    const policyConfig = loadPolicyConfig();
+    const { policyConfig, configPath } = loadPolicyConfig();
     const prisma = new prisma_1.PrismaClient();
     await prisma.$connect();
-    const config = new Config_1.ConfigImpl(policyConfig);
+    const configImpl = new Config_1.ConfigImpl(policyConfig, configPath);
+    const config = configImpl;
     const cases = new prismaCaseService_1.PrismaCaseRepository(prisma);
     const audit = new prismaAuditService_1.PrismaAuditRepository(prisma);
     const outbox = new prismaOutboxService_1.PrismaOutboxRepository(prisma);
@@ -36,19 +37,21 @@ async function getCliContainer() {
         await prisma.$disconnect();
         container = null;
     };
-    container = { config, cases, audit, outbox, prisma, disconnect };
+    container = { config, configImpl, cases, audit, outbox, prisma, disconnect };
     return container;
 }
 // Load and validate policy config from JSON file
+// Returns both the config and the path for hot-reload capability
 // Throws if file not found or validation fails
 function loadPolicyConfig() {
-    const policyPath = path_1.default.resolve(process.cwd(), 'config/policy.json');
+    const configPath = path_1.default.resolve(process.cwd(), 'config/policy.json');
     try {
-        const fileContents = fs_1.default.readFileSync(policyPath, 'utf-8');
+        const fileContents = fs_1.default.readFileSync(configPath, 'utf-8');
         const raw = JSON.parse(fileContents);
-        return policySchema_1.PolicySchema.parse(raw);
+        const policyConfig = policySchema_1.PolicySchema.parse(raw);
+        return { policyConfig, configPath };
     }
     catch (error) {
-        throw new Error(`Failed to read configuration file at ${policyPath}: ${error.message}`);
+        throw new Error(`Failed to read configuration file at ${configPath}: ${error.message}`);
     }
 }

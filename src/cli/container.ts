@@ -13,8 +13,10 @@ import { PrismaOutboxRepository } from '../infra/services/prismaOutboxService';
 import type { Config, CaseRepository, AuditRepository, OutboxRepository } from '../core/ports';
 
 // Container shape for CLI commands
+// Includes configImpl for direct access to reload functionality
 export interface CliContainer {
   config: Config;
+  configImpl: ConfigImpl;
   cases: CaseRepository;
   audit: AuditRepository;
   outbox: OutboxRepository;
@@ -33,12 +35,13 @@ export async function getCliContainer(): Promise<CliContainer> {
     return container;
   }
 
-  const policyConfig = loadPolicyConfig();
+  const { policyConfig, configPath } = loadPolicyConfig();
   const prisma = new PrismaClient();
 
   await prisma.$connect();
 
-  const config: Config = new ConfigImpl(policyConfig);
+  const configImpl = new ConfigImpl(policyConfig, configPath);
+  const config: Config = configImpl;
   const cases: CaseRepository = new PrismaCaseRepository(prisma);
   const audit: AuditRepository = new PrismaAuditRepository(prisma);
   const outbox: OutboxRepository = new PrismaOutboxRepository(prisma);
@@ -49,19 +52,21 @@ export async function getCliContainer(): Promise<CliContainer> {
     container = null;
   };
 
-  container = { config, cases, audit, outbox, prisma, disconnect };
+  container = { config, configImpl, cases, audit, outbox, prisma, disconnect };
   return container;
 }
 
 // Load and validate policy config from JSON file
+// Returns both the config and the path for hot-reload capability
 // Throws if file not found or validation fails
-function loadPolicyConfig(): PolicyConfig {
-  const policyPath = path.resolve(process.cwd(), 'config/policy.json');
+function loadPolicyConfig(): { policyConfig: PolicyConfig; configPath: string } {
+  const configPath = path.resolve(process.cwd(), 'config/policy.json');
   try {
-    const fileContents = fs.readFileSync(policyPath, 'utf-8');
+    const fileContents = fs.readFileSync(configPath, 'utf-8');
     const raw = JSON.parse(fileContents);
-    return PolicySchema.parse(raw);
+    const policyConfig = PolicySchema.parse(raw);
+    return { policyConfig, configPath };
   } catch (error) {
-    throw new Error(`Failed to read configuration file at ${policyPath}: ${(error as Error).message}`);
+    throw new Error(`Failed to read configuration file at ${configPath}: ${(error as Error).message}`);
   }
 }
