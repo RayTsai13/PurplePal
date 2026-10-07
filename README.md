@@ -89,18 +89,21 @@ Edit `config/policy.json` to match your residence halls:
   "halls": [
     {
       "name": "YourHallName",
-      "aliases": ["yourhallname", "YOURHALLNAME"],
+      "aliases": ["yourhall", "yh"],
       "raRoleId": "ROLE_ID_FOR_RAS_OF_THIS_HALL",
       "queueChannelId": "CHANNEL_ID_FOR_RA_QUEUE",
       "hallRoleId": "ROLE_ID_GIVEN_TO_VERIFIED_RESIDENTS",
       "room": {
         "pattern": "^Y-\\d{3}-[A-D]$",
-        "example": "Y-312-A"
+        "example": "Y-312-A",
+        "prefix": "Y"
       }
     }
   ]
 }
 ```
+
+This is an excerpt; start from `config/policy.example.json`, which includes the timeouts, limits, and every message template. The bot validates the file at startup and prints each problem: missing templates, IDs that aren't numeric Discord IDs, and regexes that don't compile.
 
 ### Hall Configuration Fields:
 
@@ -111,8 +114,19 @@ Edit `config/policy.json` to match your residence halls:
 | `raRoleId` | Discord role ID for RAs who can verify this hall |
 | `queueChannelId` | Channel where verification requests are posted |
 | `hallRoleId` | Role granted to verified residents |
-| `room.pattern` | Regex pattern for valid room numbers |
+| `room.pattern` | Regex the full room (e.g. `Y-312-A`) must match |
 | `room.example` | Example shown to users |
+| `room.prefix` | Building prefix joined with the room number and unit |
+| `room.roomNumberPattern` / `room.unitPattern` | Regexes for the two DM steps (default `^\\d{3}$` and `^[A-D]$`) |
+
+Optional top-level settings:
+
+| Field | Description |
+|-------|-------------|
+| `unverifiedRoleId` | Role given to new members until an RA approves them (removed on approval) |
+| `lobbyChannelId` | Channel unverified members can chat in; mentioned in the welcome DM |
+
+The running bot reloads `config/policy.json` automatically when it changes. Validate edits first with `npm run cli -- config validate`.
 
 ## Step 5: Invite the Bot
 
@@ -203,14 +217,17 @@ purplepal> exit
 | `audit <caseId>` | View audit trail for a case |
 | `case inspect <caseId>` | View case details |
 | `case list-pending` | List cases awaiting RA review |
-| `case force-expire <caseId>` | Manually expire a case |
-| `case force-decide <caseId> <approve\|deny>` | Admin override |
-| `case reset-user <userId>` | Clear user's verification |
-| `outbox list` | List notification queue |
-| `outbox retry <jobId>` | Retry a failed notification |
+| `case force-expire <caseId>` | Expire an active case and DM the user |
+| `case force-decide <caseId> <approve\|deny>` | Admin override (approval grants the hall role) |
+| `case reset-user <userId>` | Cancel the user's cases and revoke their hall role |
+| `outbox list` | List the notification/role-change queue |
+| `outbox retry <jobId>` | Retry a failed job |
 | `config show` | Display current configuration |
 | `config halls` | List hall configurations |
 | `config templates` | Show message templates |
+| `config validate` | Validate `config/policy.json` |
+
+Admin actions are queued in the outbox; the running bot delivers the DMs and role changes.
 
 ## Database Management
 
@@ -250,10 +267,11 @@ npm run db:studio
 ### Role assignment fails
 - Ensure bot role is higher than roles it's trying to assign
 - Check `hallRoleId` in `config/policy.json`
+- Role changes are retried (`roleAssignMaxRetries`). Failed ones show up in `npm run cli -- outbox list -s failed`, and the "approved" DM is only sent once the role is granted. Fix the permission, then `outbox retry <jobId>`
 
 ### "Invalid hall" errors
 - Check `aliases` in `config/policy.json` include common misspellings
-- Aliases are case-sensitive
+- Matching ignores case and surrounding spaces
 
 ## Architecture Overview
 
@@ -272,8 +290,8 @@ src/
 
 ### Key Concepts:
 
-- **Cases** - Track verification requests through states: `joined` → `hall_chosen` → `awaiting_ra` → `approved`/`denied`/`expired`
-- **Outbox** - Reliable message delivery with retry logic
+- **Cases** - Track verification requests through states: `joined` → `hall_chosen` → `room_number_entered` → `awaiting_ra` → `approved`/`denied`/`expired` (or `cancelled` by a reset)
+- **Outbox** - Reliable delivery of DMs, queue posts, and role changes, written in the same transaction as the state change
 - **Audit Log** - Immutable record of all state transitions
 - **Orchestrator** - State machine managing the verification flow
 

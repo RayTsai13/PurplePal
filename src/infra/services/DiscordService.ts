@@ -1,6 +1,5 @@
 import type {
   DiscordService,
-  HallValidationResult,
   RoomNormalizationResult,
   RoleOperationResult,
 } from '../../core/ports';
@@ -14,32 +13,13 @@ import type { TextBasedChannel } from 'discord.js';
 interface NormalizeOptions extends NonNullable<RoomConfig['normalize']> {}
 
 // Unified Discord service implementing DiscordService port interface
-// Handles hall validation, room normalization, notifications, and role management
+// Handles room normalization, notifications, role management, and RA role checks
 export class DiscordServiceImpl implements DiscordService {
   constructor(
     private readonly client: DiscordClient,
     private readonly hallDirectory: HallDirectory,
     private readonly guildId: string,
   ) {}
-
-  // ==================== Hall Validation ====================
-
-  // Validate hall input and return normalized name with Discord IDs
-  async validateHall(hall: string): Promise<HallValidationResult> {
-    const match = this.hallDirectory.resolve(hall);
-
-    if (!match) {
-      return { valid: false };
-    }
-
-    return {
-      valid: true,
-      normalizedHall: match.name,
-      raRoleId: match.raRoleId,
-      queueChannelId: match.queueChannelId,
-      hallRoleId: match.hallRoleId,
-    };
-  }
 
   // ==================== Room Normalization ====================
 

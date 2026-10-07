@@ -1,22 +1,25 @@
 {
   "term": "Winter 2025",
-  "lobbyChannelId": "REPLACE_WITH_LOBBY_CHANNEL_ID",
-  "unverifiedRoleId": "REPLACE_WITH_UNVERIFIED_ROLE_ID",
   "timeouts": {
     "awaitingRA_ttl_hours": 72,
-    "reminder_hours": [24]
+    "reminder_hours": [
+      24
+    ]
   },
-
   "halls": [
     {
       "name": "Summit",
-      "aliases": ["summit", "SUMMIT"],
+      "aliases": [
+        "summit",
+        "SUMMIT"
+      ],
       "raRoleId": "1430120010969383008",
       "queueChannelId": "1430120254985601034",
       "hallRoleId": "1430118304600555531",
       "room": {
         "pattern": "^S-\\d{3}-[A-D]$",
         "example": "S-312-A",
+        "prefix": "S",
         "normalize": {
           "uppercase": true,
           "trimSpaces": true,
@@ -26,16 +29,19 @@
         }
       }
     },
-
     {
       "name": "Forest",
-      "aliases": ["forest", "FOREST"],
+      "aliases": [
+        "forest",
+        "FOREST"
+      ],
       "raRoleId": "1430120010969383008",
       "queueChannelId": "1430120274971328704",
       "hallRoleId": "1430119540553154640",
       "room": {
         "pattern": "^F-\\d{3}-[A-D]$",
         "example": "F-312-A",
+        "prefix": "F",
         "normalize": {
           "uppercase": true,
           "trimSpaces": true,
@@ -45,16 +51,19 @@
         }
       }
     },
-
     {
       "name": "Horizon",
-      "aliases": ["horizon", "HORIZON"],
+      "aliases": [
+        "horizon",
+        "HORIZON"
+      ],
       "raRoleId": "1430120010969383008",
       "queueChannelId": "1430120307468931082",
       "hallRoleId": "1430119589462675516",
       "room": {
         "pattern": "^H-\\d{3}-[A-D]$",
         "example": "H-312-A",
+        "prefix": "H",
         "normalize": {
           "uppercase": true,
           "trimSpaces": true,
@@ -65,18 +74,22 @@
       }
     }
   ],
-
   "limits": {
     "maxNotificationRetries": 5,
-    "notificationBackoffSeconds": [30, 120, 300, 900, 1800],
+    "notificationBackoffSeconds": [
+      30,
+      120,
+      300,
+      900,
+      1800
+    ],
     "roleAssignMaxRetries": 3,
-    "roleAssignRetryBackoffSeconds": [10, 30, 60]
+    "roleAssignRetryBackoffSeconds": [
+      10,
+      30,
+      60
+    ]
   },
-  "features": {
-    "enablePublicFallbackOnDMDenied": false,
-    "enableRAReassign": false
-  },
-
   "templates": {
     "dm": {
       "welcome_joined": "Welcome to the server! While you complete verification, you can chat in <#{{lobby_channel_id}}>.\n\nPlease reply with your residence hall from: {{hall_list}}.",
@@ -93,7 +106,8 @@
       "denied": "❌ Verification was denied by the RA. Reason: {{reason}}. If this seems wrong, reply here.",
       "expired": "⏳ This request expired after {{ttl_hours}} hours. Start again with {{start_command}}.",
       "already_in_progress": "You already have a verification in progress for {{term}}. We’ll notify you once it’s resolved.",
-      "system_error": "We hit a snag processing your request. Please try again shortly."
+      "system_error": "We hit a snag processing your request. Please try again shortly.",
+      "already_verified": "You're already verified for {{hall}} this term. If that's wrong, ask an admin to reset your verification."
     },
     "ra_queue": {
       "ra_verify_card_title": "Verify {{user_tag}} — {{hall}} • {{room}}",

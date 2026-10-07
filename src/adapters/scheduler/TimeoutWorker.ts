@@ -1,17 +1,12 @@
-import type { CaseRecord, CaseRepository, OutboxRepository, Config } from '../../core/ports';
-
-// Compatibility type aliases for clearer intent
-type CaseService = CaseRepository;
-type OutboxService = OutboxRepository;
+import type { CaseRecord, CaseRepository, Config } from '../../core/ports';
 import type { VerificationOrchestrator } from '../../core/application/orchestrator/VerificationOrchestrator';
 import { logger } from '../../infra/logger';
 
 // Dependencies for timeout worker
 export interface TimeoutWorkerDeps {
-  cases: CaseService;
+  cases: CaseRepository;
   policy: Config;
   orchestrator: VerificationOrchestrator;
-  outbox: OutboxService;
   batchIntervalMs?: number;
 }
 
@@ -26,7 +21,6 @@ export const startTimeoutWorker = ({
   cases,
   policy,
   orchestrator,
-  outbox,
   batchIntervalMs = 60_000,
 }: TimeoutWorkerDeps): TimeoutWorkerHandle => {
   // Store timer ID to allow cancellation
@@ -43,7 +37,7 @@ export const startTimeoutWorker = ({
 
     try {
       // Process all awaiting_ra cases for expiration and reminders
-      await processTimeouts(cases, policy, orchestrator, outbox);
+      await processTimeouts(cases, policy, orchestrator);
     } catch (err) {
       // Log error but don't crash, continue polling
       logger.error({ err }, 'Timeout worker tick failed');
@@ -74,62 +68,45 @@ export const startTimeoutWorker = ({
 };
 
 // Process all awaiting_ra cases: expire old ones and send reminders
+// Each case is handled independently so one failure doesn't block the rest
 export const processTimeouts = async (
-  cases: CaseService,
+  cases: CaseRepository,
   policy: Config,
   orchestrator: VerificationOrchestrator,
-  outbox: OutboxService,
 ): Promise<void> => {
-  // Get all cases currently awaiting RA response
   const allAwaiting = await cases.listAwaitingRA();
   if (allAwaiting.length === 0) {
     return;
   }
 
-  // Get timeout and messaging config
-  const timeouts = policy.timeouts();
-  const templates = policy.messaging();
-  const reminderHours = timeouts.reminder_hours ?? [];
+  const reminderHours = policy.timeouts().reminder_hours ?? [];
   const now = new Date();
 
-  // Process each awaiting case for expiration and reminders
   for (const kase of allAwaiting) {
-    // Check if case has expired (expiresAt timestamp has passed)
-    if (kase.expiresAt && kase.expiresAt <= now) {
-      // Transition case to expired state via orchestrator
-      await orchestrator.expire(kase.id, `expire-${now.toISOString()}`);
-      // continue skips the reminder check for this case
-      continue;
-    }
+    try {
+      if (kase.expiresAt && kase.expiresAt <= now) {
+        await orchestrator.expire(kase.id, `expire-${kase.id}`);
+        continue;
+      }
 
-    // Send reminder if not already sent and enough time has elapsed
-    // !kase.reminderSentAt checks if reminder hasn't been sent yet (null/undefined)
-    if (!kase.reminderSentAt && shouldSendReminder(kase, reminderHours, now)) {
-      // Queue reminder DM with case data (hall and room info)
-      await outbox.enqueueDM(
-        kase.userId,
-        templates.dm.reminder_user,
-        { hall: kase.hall, room: kase.room },
-        // idempotencyKey prevents duplicate reminders for same case
-        { caseId: kase.id, idempotencyKey: `reminder-${kase.id}` },
-      );
-      // Mark reminder as sent so we don't send it again next tick
-      await cases.markReminderSent(kase.id, now);
+      const due = dueReminderCount(kase, reminderHours, now);
+      if (due > kase.remindersSent) {
+        await orchestrator.sendReminder(kase, due);
+      }
+    } catch (err) {
+      logger.error({ err, caseId: kase.id }, 'Failed to process timeout for case');
     }
   }
 };
 
-// Check if enough time has passed to send reminder for this case
-const shouldSendReminder = (kase: CaseRecord, reminderHours: number[], now: Date): boolean => {
-  // No reminders configured or case has no update timestamp
-  if (reminderHours.length === 0 || !kase.updatedAt) {
-    return false;
+// Number of reminder thresholds that have elapsed since the case was submitted for RA review
+// Example: reminderHours = [24, 48] and 30 hours elapsed -> 1 (the 24h reminder is due)
+export const dueReminderCount = (kase: CaseRecord, reminderHours: number[], now: Date): number => {
+  const since = kase.submittedAt ?? kase.updatedAt;
+  if (reminderHours.length === 0 || !since) {
+    return 0;
   }
 
-  // Calculate hours elapsed since case was last updated
-  // (now - updatedAt in ms) / (1000 * 60 * 60) converts ms to hours
-  const elapsedHours = (now.getTime() - kase.updatedAt.getTime()) / (1000 * 60 * 60);
-  // .some() returns true if any configured reminder hour threshold has been reached
-  // Example: if reminderHours = [24, 48] and elapsed = 25 hours, returns true for 24-hour reminder
-  return reminderHours.some((hours) => elapsedHours >= hours);
+  const elapsedHours = (now.getTime() - since.getTime()) / (1000 * 60 * 60);
+  return reminderHours.filter((hours) => elapsedHours >= hours).length;
 };

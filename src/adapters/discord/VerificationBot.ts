@@ -11,28 +11,28 @@ import {
   PartialUser,
 } from 'discord.js';
 import { logger } from '../../infra/logger';
-import type { VerificationOrchestrator } from '../../core/application/orchestrator/VerificationOrchestrator';
-import type { CaseRecord, CaseRepository, Config, DiscordService } from '../../core/ports';
+import type {
+  DecisionResult,
+  VerificationOrchestrator,
+} from '../../core/application/orchestrator/VerificationOrchestrator';
 import { DiscordClient } from './DiscordClient';
+
+// Ephemeral replies for each /verify-decision outcome
+const DECISION_REPLIES: Record<Exclude<DecisionResult, { ok: true }>['reason'], (caseId: string) => string> = {
+  not_found: (caseId) => `Case ${caseId} not found.`,
+  not_pending: (caseId) => `Case ${caseId} is not awaiting review (it may already be decided or expired).`,
+  unauthorized: () => 'You are not authorized to decide this case.',
+  conflict: (caseId) => `Case ${caseId} was just decided by someone else.`,
+};
 
 // Binds Discord events to verification orchestrator
 // Handles /verify, /verify-decision, /verify-reset slash commands, DMs, and emoji reactions
+// All workflow and authorization rules live in the orchestrator; this class only translates events
 export class VerificationBot {
-  // Set of Discord user IDs with moderator permissions (can approve any case)
-  private readonly moderators: Set<string>;
-
   constructor(
     private readonly discord: DiscordClient,
     private readonly orchestrator: VerificationOrchestrator,
-    private readonly cases: CaseRepository,
-    private readonly config: Config,
-    private readonly hallService: DiscordService,
-    moderatorIds: string[],
-    private readonly guildId: string,
-  ) {
-    // Create Set from moderator IDs for fast lookups with .has()
-    this.moderators = new Set(moderatorIds);
-  }
+  ) {}
 
   // Register Discord event handlers for verification workflow
   bind(): void {
@@ -44,6 +44,7 @@ export class VerificationBot {
         await this.handleInteraction(interaction);
       } catch (err) {
         logger.error({ err }, 'Failed to handle interaction');
+        await this.replyWithError(interaction);
       }
     });
 
@@ -97,132 +98,92 @@ export class VerificationBot {
     }
   }
 
+  // Don't leave the user staring at "thinking..." if a handler threw after deferring
+  private async replyWithError(interaction: Interaction): Promise<void> {
+    if (!interaction.isChatInputCommand()) {
+      return;
+    }
+    const content = 'Something went wrong. Please try again or contact an admin.';
+    try {
+      if (interaction.deferred || interaction.replied) {
+        await interaction.editReply(content);
+      } else {
+        await interaction.reply({ ephemeral: true, content });
+      }
+    } catch (err) {
+      logger.error({ err }, 'Failed to send error reply');
+    }
+  }
+
   // /verify command starts new verification case
   private async startVerification(interaction: ChatInputCommandInteraction): Promise<void> {
     // deferReply with ephemeral: true makes reply only visible to user who ran command
     await interaction.deferReply({ ephemeral: true });
-    // Create case in joined state and prompt user to DM hall selection
     await this.orchestrator.onUserJoined(interaction.user.id, interaction.id);
-    // editReply sends the deferred response
     await interaction.editReply('Check your DMs to continue verification.');
   }
 
-  // /verify-decision command for RAs to approve or deny a case
+  // /verify-decision command for RAs and moderators to approve or deny a case
   private async handleDecision(interaction: ChatInputCommandInteraction): Promise<void> {
-    // .getString(name, required) gets string option from command parameters
-    const caseId = interaction.options.getString('case_id', true);
-    // .toLowerCase() ensures "APPROVE" and "Approve" both become "approve"
+    const caseId = interaction.options.getString('case_id', true).trim();
     const decisionRaw = interaction.options.getString('decision', true).toLowerCase();
-    // ?? operator provides fallback to undefined if reason not provided
     const reason = interaction.options.getString('reason') ?? undefined;
 
-    // Validate decision is one of allowed values
     if (decisionRaw !== 'approve' && decisionRaw !== 'deny') {
       await interaction.reply({ ephemeral: true, content: 'Decision must be either approve or deny.' });
       return;
     }
 
-    // Type cast string to union type after validation
-    const decision = decisionRaw as 'approve' | 'deny';
-    // Look up case to verify it exists and get state info
-    const kase = await this.cases.findById(caseId);
-
-    if (!kase) {
-      await interaction.reply({ ephemeral: true, content: `Case ${caseId} not found.` });
-      return;
-    }
-
-    // Check if user is authorized to decide this case (RA for hall or moderator)
-    const authorized = await this.isAuthorized(interaction.user.id, kase);
-    if (!authorized) {
-      await interaction.reply({ ephemeral: true, content: 'You are not authorized to decide this case.' });
-      return;
-    }
-
-    // Defer reply before long operation
     await interaction.deferReply({ ephemeral: true });
 
-    try {
-      // Update case state to approved or denied
-      await this.orchestrator.onRAResponded(
-        caseId,
-        interaction.user.id,
-        decision,
-        reason,
-        interaction.id,
-      );
-      await interaction.editReply(`Recorded ${decision} for case ${caseId}.`);
-    } catch (err) {
-      logger.error({ err, caseId }, 'Failed to record decision');
-      await interaction.editReply('Failed to record decision. Please try again or contact an admin.');
-    }
+    const result = await this.orchestrator.onRAResponded(
+      caseId,
+      interaction.user.id,
+      decisionRaw,
+      reason,
+      interaction.id,
+    );
+
+    await interaction.editReply(
+      result.ok ? `Recorded ${decisionRaw} for case ${caseId}.` : DECISION_REPLIES[result.reason](caseId),
+    );
   }
 
   // Handle DMs for hall and room selection during verification
   private async handleMessage(message: Message): Promise<void> {
-    // Ignore bot messages
-    if (message.author.bot) {
+    if (message.author.bot || message.channel.type !== ChannelType.DM) {
       return;
     }
 
-    // Only process direct messages, not server messages
-    if (message.channel.type !== ChannelType.DM) {
-      return;
-    }
-
-    // Ignore empty messages
     const content = message.content.trim();
     if (!content) {
       return;
     }
 
-    // Get user's active case for current term
-    const term = this.config.currentTerm();
-    const kase = await this.cases.getActiveCase(message.author.id, term);
+    const result = await this.orchestrator.onDirectMessage(message.author.id, content, message.id);
+    if (result.handled) {
+      return;
+    }
 
-    if (!kase) {
+    if (result.reason === 'no_case') {
       await message.channel.send('Start verification by running /verify inside the server.');
-      return;
-    }
-
-    // Route based on case state (joined -> hall_chosen -> room_number_entered -> awaiting_ra -> decided)
-    if (kase.state === 'joined') {
-      // User sends hall name
-      await this.orchestrator.onHallChosen(message.author.id, content, message.id);
-      return;
-    }
-
-    if (kase.state === 'hall_chosen') {
-      // User sends room number (step 2 of 3)
-      await this.orchestrator.onRoomNumberEntered(message.author.id, content, message.id);
-      return;
-    }
-
-    if (kase.state === 'room_number_entered') {
-      // User sends unit letter (step 3 of 3)
-      await this.orchestrator.onRoomEntered(message.author.id, content, message.id);
-      return;
-    }
-
-    if (kase.state === 'awaiting_ra') {
-      // Case is waiting for RA response, user should not send more messages
+    } else {
       await message.channel.send('Thanks! Your request is already awaiting RA review.');
-      return;
     }
-
-    // For any other state (approved, denied, expired) offer to restart
-    await message.channel.send('Your case has already been decided. Re-run /verify to start a new request.');
   }
 
-  // /verify-reset command to clear user's verification state
+  // /verify-reset command to cancel the user's in-progress verification
   private async handleReset(interaction: ChatInputCommandInteraction): Promise<void> {
     await interaction.deferReply({ ephemeral: true });
 
-    // Delete all cases for this user in current term
-    const term = this.config.currentTerm();
-    await this.cases.resetCase(interaction.user.id, term);
-
-    await interaction.editReply('Your verification flow has been reset. Run /verify to start again.');
+    const result = await this.orchestrator.onUserReset(interaction.user.id, interaction.id);
+    if (result.ok) {
+      await interaction.editReply('Your verification flow has been reset. Run /verify to start again.');
+    } else if (result.reason === 'pending_review') {
+      await interaction.editReply('Your request is already awaiting RA review and can no longer be reset.');
+    } else {
+      await interaction.editReply('You have no verification in progress to reset.');
+    }
   }
 
   // Handle new member joining the server - auto-trigger verification
@@ -233,53 +194,9 @@ export class VerificationBot {
     }
 
     logger.info({ memberId: member.id, guildId: member.guild.id }, 'Auto-triggering verification for new member');
-
-    // Assign unverified role if configured (restricts channel access until verified)
-    const unverifiedRoleId = this.config.unverifiedRoleId();
-    if (unverifiedRoleId) {
-      try {
-        await this.hallService.assignRoles(member.id, [unverifiedRoleId], `join-${member.id}`);
-        logger.info({ memberId: member.id, roleId: unverifiedRoleId }, 'Assigned unverified role to new member');
-      } catch (err) {
-        logger.error({ err, memberId: member.id }, 'Failed to assign unverified role');
-        // Continue with verification even if role assignment fails
-      }
-    }
-
-    // Trigger verification workflow - creates case and sends DM asking for hall
-    await this.orchestrator.onUserJoined(member.id, `join-${member.id}-${Date.now()}`);
-  }
-
-  // Check if user is moderator (has full permissions regardless of hall)
-  private isModerator(userId: string): boolean {
-    // .has() checks if Set contains the user ID
-    return this.moderators.has(userId);
-  }
-
-  // Check if user can approve a specific case
-  // Moderators can approve any case, RAs can approve only their hall cases
-  private async isAuthorized(userId: string, kase: CaseRecord): Promise<boolean> {
-    // Moderators always authorized
-    if (this.isModerator(userId)) {
-      return true;
-    }
-
-    // Must have hall assigned to check RA role
-    if (!kase.hall) {
-      return false;
-    }
-
-    // Get hall configuration to find RA role ID
-    const hallDetails = await this.hallService.validateHall(kase.hall);
-    if (!hallDetails.valid || !hallDetails.raRoleId) {
-      return false;
-    }
-
-    // Fetch guild and member to check if user has RA role for this hall
-    const guild = await this.discord.sdk.guilds.fetch(this.guildId);
-    const member = await guild.members.fetch(userId);
-    // .cache.has() checks if user has the role in their role list
-    return member.roles.cache.has(hallDetails.raRoleId);
+    // Each join is a distinct event, so the key includes the join time
+    const joinedAt = member.joinedTimestamp ?? Date.now();
+    await this.orchestrator.onMemberJoined(member.id, `join-${member.id}-${joinedAt}`);
   }
 
   // Handle emoji reactions on RA queue approval messages
@@ -309,55 +226,36 @@ export class VerificationBot {
       return;
     }
 
-    // Convert emoji to approve or deny decision
     const decision = this.decisionFromEmoji(reaction.emoji.name ?? '');
     if (!decision) {
       return;
     }
 
-    // Extract case ID from message content using regex
     const caseId = this.extractCaseId(message.content);
     if (!caseId) {
       return;
     }
 
-    // Verify case exists and is waiting for RA response
-    const kase = await this.cases.findById(caseId);
-    if (!kase || kase.state !== 'awaiting_ra') {
-      return;
-    }
-
-    // Check if reactor is authorized RA for this case
-    const authorized = await this.isAuthorized(user.id, kase);
-    if (!authorized) {
-      // Remove unauthorized reaction
+    // Silently drop reactions from people who can't decide, instead of posting an
+    // unauthorized-attempt notice for every stray emoji
+    if (!(await this.orchestrator.canDecide(caseId, user.id))) {
       await reaction.users.remove(user.id);
       return;
     }
 
-    try {
-      // Process the decision via orchestrator
-      // Idempotency key includes emoji, case, and user to prevent duplicates
-      await this.orchestrator.onRAResponded(
-        caseId,
-        user.id,
-        decision,
-        undefined,
-        `reaction-${reaction.emoji.name}-${caseId}-${user.id}`,
-      );
-      // Remove reaction after processing to indicate it was handled
-      await reaction.users.remove(user.id);
-    } catch (err) {
-      // Handle optimistic locking conflicts when multiple RAs react simultaneously
-      // version error means another RA already processed this case
-      if (err instanceof Error && err.message.includes('version')) {
-        logger.info({ caseId, userId: user.id }, 'Case already processed by another RA');
-        await reaction.users.remove(user.id);
-        return;
-      }
-      // Re-throw other errors to be caught by outer try-catch in bind()
-      throw err;
+    const result = await this.orchestrator.onRAResponded(
+      caseId,
+      user.id,
+      decision,
+      undefined,
+      `reaction-${reaction.emoji.name}-${caseId}-${user.id}`,
+    );
+    if (!result.ok) {
+      logger.info({ caseId, userId: user.id, reason: result.reason }, 'Reaction decision not applied');
     }
+
+    // Remove the reaction either way: applied, or the case was already decided
+    await reaction.users.remove(user.id);
   }
 
   // Convert emoji to decision approval action

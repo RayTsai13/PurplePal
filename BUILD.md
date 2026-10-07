@@ -225,9 +225,10 @@ npm run cli -- config show
 npm run cli -- config halls
 ```
 
-Reload config without restart:
+The running bot reloads `config/policy.json` automatically when the file changes, and on `SIGHUP`. An invalid file is rejected and the previous config stays active. Validate an edit before saving it into place:
 ```bash
-npm run cli -- config reload
+npm run cli -- config validate
+# Force a reload: kill -HUP <bot pid>   (Docker: docker compose kill -s HUP bot)
 ```
 
 See `config/policy.example.json` for all available options.
@@ -264,6 +265,13 @@ config/                  # Runtime configuration files
 ### Run All Tests
 ```bash
 npm test
+```
+
+### Run Database Integration Tests
+The repository tests in `src/tests/repositories` are skipped unless `TEST_DATABASE_URL` points at a migrated PostgreSQL database. CI runs them. Each run writes only to its own throwaway term and cleans up afterward.
+```bash
+npm run db:start && npm run db:migrate
+TEST_DATABASE_URL=postgresql://purplepal:purplepal@localhost:5432/purplepal npm test
 ```
 
 ### Run Specific Test File

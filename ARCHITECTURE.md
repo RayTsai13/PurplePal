@@ -59,29 +59,45 @@ The orchestrator is a state machine that coordinates the entire verification flo
 ```
 joined
   ↓ (user provides hall via DM)
-hall_chosen
-  ↓ (user provides room via DM)
+hall_chosen  ←─ (a hall name sent here changes the hall)
+  ↓ (user provides room number via DM)
+room_number_entered
+  ↓ (user provides unit via DM)
 awaiting_ra
-  ├→ (RA approves) → approved
-  ├→ (RA denies) → denied
+  ├→ (RA/moderator approves) → approved
+  ├→ (RA/moderator denies)   → denied
   └→ (expires after timeout) → expired
+
+joined / hall_chosen / room_number_entered ──(/verify-reset)──→ cancelled
+any active state ──(CLI force-expire)──→ expired
+active or approved ──(CLI reset-user)──→ cancelled
 ```
+
+The database allows at most one *active* case (`joined`, `hall_chosen`, `room_number_entered`, `awaiting_ra`) per user per term, enforced by a partial unique index. A user with an `approved` case for the term cannot start another one.
 
 **Key Methods:**
 
-- `onUserJoined(userId, idempotencyKey)` - Creates new case in joined state
-- `onHallChosen(userId, hallName, idempotencyKey)` - Validates hall, transitions to hall_chosen
-- `onRoomEntered(userId, roomNumber, idempotencyKey)` - Validates room, transitions to awaiting_ra, queues RA notification
-- `onRAResponded(caseId, raUserId, decision, reason, idempotencyKey)` - Processes RA approval/denial with optimistic locking
-- `expire(caseId, idempotencyKey)` - Marks case as expired, queues expiration message
+- `onMemberJoined(userId, key)` - New guild member: assigns the unverified role and starts verification, or restores the hall role if already verified this term
+- `onUserJoined(userId, key)` - `/verify`: creates a case in `joined` (or reports the existing/approved one)
+- `onDirectMessage(userId, content, key)` - Routes a DM to the hall, room number, or unit step based on case state
+- `onHallChosen` / `onRoomNumberEntered` / `onRoomEntered` - The three DM steps. Room number and unit are validated against the hall's `roomNumberPattern` / `unitPattern`, joined as `{prefix}-{number}-{unit}`, then checked against the hall's full `pattern`
+- `canDecide(caseId, userId)` - Whether a user may decide a case (moderator or hall RA, never the case owner)
+- `onRAResponded(caseId, actorId, decision, reason?, key?, { asAdmin? })` - Records a decision and returns a typed result: `{ ok: true, state }` or `{ ok: false, reason: 'not_found' | 'not_pending' | 'unauthorized' | 'conflict' }`
+- `expire(caseId, key, { admin? })` - Expires a pending case (any active case for admins)
+- `sendReminder(case, n)` - Sends the nth reminder to the user and the hall's RA queue
+- `onUserReset(userId, key)` / `adminResetUser(userId, term, actorId)` - Cancel cases; admin reset also revokes the hall role
+
+**Transactions:**
+
+Every transition runs inside one database transaction via the `UnitOfWork` port: the state change, decision record, audit entry, and outbox messages commit together or not at all. Discord reads (RA role checks) happen before the transaction starts.
 
 **Optimistic Locking:**
 
-Cases use version-based optimistic locking to prevent race conditions when multiple RAs respond simultaneously. The orchestrator checks that the case version matches before allowing state transitions. If versions don't match, it throws an error indicating another RA already processed the case.
+`updateState` includes the expected version in the `UPDATE ... WHERE` clause, so when two RAs respond at once exactly one update succeeds. The loser gets a `ConcurrencyError`, which `onRAResponded` reports as `{ ok: false, reason: 'conflict' }`.
 
-**Notifications:**
+**Side effects go through the outbox:**
 
-All user-facing messages are queued via the outbox repository using idempotency keys. This ensures reliable delivery and prevents duplicate messages if the orchestrator is interrupted.
+DMs, queue-channel posts, and Discord role changes are all queued in the outbox with idempotency keys and delivered by `OutboxWorker`. On approval the hall role is granted first; the "approved" DM is attached as a follow-up and only sent once the role change succeeds.
 
 #### Ports Interface
 
@@ -89,47 +105,38 @@ File: `src/core/ports.ts`
 
 Ports define contracts between the core domain and external systems. They're implemented by the infrastructure layer.
 
-**Six Core Ports:**
+**Core Ports:**
 
 1. **Config** - Synchronous configuration access
-   - `currentTerm()` - Get current academic term
-   - `timeouts()` - Get case TTL and reminder intervals
-   - `limits()` - Get retry limits and backoff intervals
-   - `halls()` - Get hall configurations
-   - `messaging()` - Get message templates
+   - `currentTerm()`, `timeouts()`, `limits()`, `messaging()`, `halls()`
+   - `hall(nameOrAlias)` - Look up a hall by name or alias (case-insensitive)
+   - `lobbyChannelId()`, `unverifiedRoleId()`, `reload()`
 
 2. **CaseRepository** - Persistence for verification cases
-   - `getActiveCase(userId, term)` - Get user's case for term
-   - `createIfNone(userId, term)` - Atomic create-if-not-exists
-   - `updateState(caseId, version, newState)` - Update with optimistic locking
-   - `findById(caseId)` - Look up case by ID
-   - `listAwaitingRA()` - Get all cases pending RA review
-   - `markReminderSent(caseId, timestamp)` - Track reminder delivery
-   - `resetCase(userId, term)` - Clear user's verification state
-   - `markExpired(caseIds)` - Batch expire multiple cases
+   - `getActiveCase(userId, term)` / `getApprovedCase(userId, term)` / `listOpenCases(userId, term)`
+   - `createIfNone(userId, term, state)` - Create unless an active case exists (throws `ConcurrencyError` on a concurrent create)
+   - `updateState(caseId, version, newState, patch)` - Update with optimistic locking (throws `ConcurrencyError` on version mismatch)
+   - `findById(caseId)`, `listAwaitingRA()`
+   - `markReminderSent(caseId, remindersSent, timestamp)` - Track how many reminder thresholds were sent
 
-3. **DiscordService** - All Discord operations
-   - `validateHall(hallName)` - Check if hall exists and get configuration
+3. **DiscordService** - Discord operations
    - `normalizeRoom(hallName, roomInput)` - Normalize and validate room format
-   - `sendDM(userId, template, data)` - Send direct message
-   - `sendToQueue(channelId, template, data)` - Send to RA approval queue
-   - `assignRoles(userId, roleIds)` - Assign Discord roles to user
-   - `removeRoles(userId, roleIds)` - Remove Discord roles from user
+   - `sendDM(userId, template, data)` / `sendToQueue(channelId, template, data)`
+   - `assignRoles(userId, roleIds)` / `removeRoles(userId, roleIds)` - Return a status instead of throwing
+   - `isRaForHall(userId, hallName)` - Check the hall's RA role
 
 4. **DecisionRepository** - RA approval/denial records
-   - `authorize(userId, caseRecord)` - Check if user can approve case
-   - `recordDecision(caseId, raUserId, decision, reason)` - Store decision
+   - `recordDecision(caseId, raUserId, decision, reason, key)` - Store decision
 
-5. **AuditRepository** - Immutable audit trail
-   - `record(caseId, action, fromState, toState, actorType, actorId, payload)` - Log action
+5. **AuditRepository** - Immutable audit trail (cases with audit history can't be deleted)
+   - `record(caseId, action, fromState, toState, actorType, actorId, payload, key)` - Log action
 
-6. **OutboxRepository** - Reliable message queue
-   - `enqueueDM(userId, template, data, options)` - Queue DM message
-   - `enqueueChannel(channelId, template, data, options)` - Queue channel message
-   - `takeDue(batchSize)` - Get messages ready to send
-   - `markSent(jobId)` - Mark message as successfully sent
-   - `markFailed(jobId, error, retryAt)` - Schedule retry with backoff
-   - `markPermanentlyFailed(jobId, error)` - Give up on message
+6. **OutboxRepository** - Reliable side-effect queue
+   - `enqueueDM`, `enqueueChannel`, `enqueueRoleChange(userId, 'add' | 'remove', roleIds, { followUp? })` - Idempotent: a repeated key is ignored
+   - `takeDue(batchSize)` - Claim due jobs (`FOR UPDATE SKIP LOCKED`, 60s lease)
+   - `markSent`, `markFailed(jobId, error, retryAt)`, `markPermanentlyFailed`
+
+7. **UnitOfWork** - `run(work)` executes `work` with transaction-bound repositories
 
 **Domain Types:**
 
@@ -147,164 +154,123 @@ Infrastructure provides concrete implementations of all ports.
 
 File: `src/infra/config/policySchema.ts` and `src/infra/services/Config.ts`
 
-Configuration is loaded from `config/policy.json` and validated with Zod schemas. The Config service provides synchronous access to settings.
+Configuration is loaded from `config/policy.json` and validated with Zod at startup. Validation catches problems before they can fail a user's verification midway:
 
-**Example policy.json structure:**
+- Every template the code sends must be present (`already_verified` has a built-in default)
+- Discord IDs must be numeric snowflakes, so unreplaced placeholders are rejected
+- Room regexes must compile
+
+`ConfigImpl` owns the `HallDirectory` used for name/alias lookups and rebuilds it on reload.
+
+**Example hall entry:**
 
 ```json
 {
-  "term": "2024-fall",
-  "halls": [
-    {
-      "name": "North Hall",
-      "aliases": ["north", "n"],
-      "raRoleId": "123456789",
-      "queueChannelId": "987654321",
-      "hallRoleId": "111111111",
-      "room": {
-        "pattern": "^[A-Z]\\d{3}$",
-        "example": "A101"
-      }
-    }
-  ],
-  "timeouts": {
-    "awaitingRA_ttl_hours": 72,
-    "reminder_hours": [24, 48]
-  },
-  "limits": {
-    "maxNotificationRetries": 5,
-    "notificationBackoffSeconds": [5, 30, 120, 600, 3600],
-    "roleAssignMaxRetries": 3,
-    "roleAssignRetryBackoffSeconds": [1, 5, 30]
-  },
-  "messaging": {
-    "dm": {
-      "welcome": "Welcome! Please tell me which hall you live in.",
-      "hall_confirmation": "Thanks for {{hall}}. Which room?",
-      "room_confirmation": "Got it. {{hall}} {{room}} submitted for approval.",
-      "reminder_user": "Your verification request is still pending. Hall: {{hall}}, Room: {{room}}"
-    },
-    "ra_queue": {
-      "new_request": "Case ID: {{caseId}}\nUser: {{userId}}\nHall: {{hall}}\nRoom: {{room}}\nReact with ✅ to approve or ❌ to deny"
-    }
+  "name": "Summit",
+  "aliases": ["summit"],
+  "raRoleId": "1430120010969383008",
+  "queueChannelId": "1430120254985601034",
+  "hallRoleId": "1430118304600555531",
+  "room": {
+    "pattern": "^S-\\d{3}-[A-D]$",
+    "example": "S-312-A",
+    "prefix": "S",
+    "roomNumberPattern": "^\\d{3}$",
+    "roomNumberExample": "312",
+    "unitPattern": "^[A-D]$",
+    "unitExample": "A",
+    "normalize": { "uppercase": true, "trimSpaces": true }
   }
 }
 ```
 
-Hall configurations support room validation with regex patterns (e.g., North Hall rooms must be in format A101, B204, etc).
+`roomNumberPattern`, `roomNumberExample`, `unitPattern`, and `unitExample` default to the values shown. See `config/policy.example.json` for a complete file, including every template.
+
+**Hot reload:** the running bot watches `config/policy.json` and also reloads on `SIGHUP`. An invalid file is logged and ignored, so the previous configuration stays in effect. `npm run cli -- config validate` checks a file before you save it into place.
 
 #### Database Access
 
-File: `src/infra/services/prisma*Service.ts`
+File: `src/infra/services/prisma*Service.ts`, `src/infra/services/prismaUnitOfWork.ts`
 
-Prisma handles all database access with prepared statements. Each repository corresponds to a database table.
+Prisma handles all database access. Repositories accept either the root client or a transaction client, so `PrismaUnitOfWork` can hand the orchestrator transaction-bound instances.
 
 **Database Schema Overview:**
 
 ```sql
 VerificationCase
   id (CUID primary key)
-  userId (Discord user ID)
-  term (academic term)
-  state (enum: joined, hall_chosen, awaiting_ra, approved, denied, expired)
-  hall (hall name, nullable)
-  room (room number/name, nullable)
-  raUserId (RA who approved, nullable)
+  userId, term
+  state (enum: joined, hall_chosen, room_number_entered, awaiting_ra, approved, denied, expired, cancelled)
+  hall, roomNumber, room (nullable)
+  raUserId (who decided, nullable)
   version (optimistic lock version)
-  expiresAt (expiration timestamp)
-  reminderSentAt (last reminder timestamp)
+  expiresAt, submittedAt (when it entered awaiting_ra)
+  reminderSentAt, remindersSent (reminder thresholds already sent)
   createdAt, updatedAt
-  Unique: (userId, term) - only one active case per term
+  Partial unique index: (userId, term) WHERE state is active, i.e. one active case per user per term
 
 Decision
-  id (CUID)
-  caseId (foreign key)
-  raUserId (RA who made decision)
-  decision (enum: approve, deny)
-  reason (optional text)
-  idempotencyKey (prevents duplicates)
-  decidedAt (timestamp)
+  id, caseId (unique), raUserId, decision (approve | deny), reason, idempotencyKey, decidedAt
 
 AuditLog
-  id (CUID)
-  caseId (foreign key)
-  action (what happened)
-  fromState, toState (state transition)
-  actorType (system, user, ra)
-  actorId (who did it)
-  payload (JSON metadata)
-  idempotencyKey (prevents duplicates)
-  timestamp
+  id, caseId (ON DELETE RESTRICT: cases with history can't be deleted)
+  action, fromState, toState, actorType (system | user | ra), actorId, payload, idempotencyKey, timestamp
 
 Outbox
-  id (CUID)
-  caseId (foreign key, nullable)
-  kind (enum: dm, channel)
-  template (message template name)
-  payload (JSON: targetId, data)
-  status (enum: pending, sent, failed)
-  attempts (retry count)
-  nextAttemptAt (when to retry)
-  lastError (error message from last attempt)
-  idempotencyKey (prevents duplicate queuing)
+  id, caseId (nullable)
+  kind (enum: dm, channel, role_add, role_remove)
+  template (message text; unused for role jobs)
+  payload (JSON: targetId, data, optional followUp DM)
+  status (pending | sent | failed), attempts, nextAttemptAt, lastError
+  idempotencyKey (unique)
 ```
+
+The partial unique index is created by raw SQL in migration `20261006000000_integrity_fixes`, because Prisma's schema language can't express it.
 
 **Optimistic Locking Implementation:**
 
-When updating a case state, Prisma checks the version field:
-
 ```typescript
-await prisma.verificationCase.update({
-  where: { id: caseId, version: currentVersion },
-  data: {
-    state: newState,
-    version: { increment: 1 }
-  }
-})
+const { count } = await prisma.verificationCase.updateMany({
+  where: { id: caseId, version: expectedVersion },
+  data: { state: newState, version: { increment: 1 } },
+});
+if (count === 0) throw new ConcurrencyError(...);
 ```
 
-If the version doesn't match (another process updated it), Prisma throws an error. The orchestrator catches this and knows another RA already processed the case.
+Because the version check is part of the `UPDATE`, Postgres serializes concurrent writers on the row lock and only the first one matches.
 
 #### Discord Service
 
 File: `src/infra/services/DiscordService.ts`
 
-Implements all Discord operations. Uses discord.js to send messages, manage roles, and validate hall configurations.
+Implements the `DiscordService` port with discord.js.
 
-**Key Implementation Details:**
-
-- Hall validation uses HallDirectory (in-memory Map for fast lookups)
-- Room normalization applies transformations (uppercase, trim whitespace, fix hyphens)
-- Room validation uses regex patterns from policy.json
-- DM sending uses Discord API to fetch user and send message
-- Queue sending posts to configured hall channel with case details
-- Role assignment retries on failure with exponential backoff
-- All operations are idempotent (can be safely retried)
+- Room normalization applies the hall's `normalize` rules (uppercase, trim, fix hyphens) and checks the full `pattern`
+- `sendDM` / `sendToQueue` render templates and post them
+- `assignRoles` / `removeRoles` return `{ status: 'failure' }` instead of throwing; the outbox worker turns that into a retry
+- `isRaForHall` checks the member's roles for the hall's RA role
 
 #### Outbox Pattern
 
 File: `src/infra/services/prismaOutboxService.ts`
 
-The outbox pattern ensures reliable message delivery even if the bot crashes. Instead of sending messages directly, operations queue them in the database. A background worker periodically drains the queue.
+All Discord side effects are written to the outbox in the same transaction as the state change that causes them, then delivered by a background worker. A crash can never leave a case approved without its DM and role change queued.
 
 **How it works:**
 
-1. Orchestrator queues message via `outbox.enqueueDM()` instead of sending directly
-2. Message stored with `status: pending` and idempotency key
-3. OutboxWorker polls database every 2 seconds
-4. For each pending message, worker calls `sendDM()` or `sendToQueue()`
-5. If send succeeds, message marked `status: sent`
-6. If send fails, message marked `status: pending` with next retry time
-7. Retries use exponential backoff: [5s, 30s, 2m, 10m, 1h]
-8. After max retries (default 5), message marked `status: failed` permanently
+1. The orchestrator enqueues jobs (`dm`, `channel`, `role_add`, `role_remove`) inside its transaction. A repeated idempotency key is a no-op (`ON CONFLICT DO NOTHING`), so it never aborts the transaction
+2. `OutboxWorker` claims due jobs every 2 seconds with `FOR UPDATE SKIP LOCKED`, leasing each one for 60s
+3. It performs the job. A role change reporting failure counts as an error
+4. On success the job is marked `sent`, and any `followUp` DM is enqueued (keyed on the job ID)
+5. On failure it is rescheduled with backoff (`notificationBackoffSeconds` or `roleAssignRetryBackoffSeconds`)
+6. After `maxNotificationRetries` / `roleAssignMaxRetries` total attempts it is marked `failed`
 
 **Benefits:**
 
-- Messages survive bot restarts
-- No message loss if network blips occur
-- Idempotency keys prevent duplicates if worker crashes mid-send
-- CLI can inspect and retry failed messages
-- Database is single source of truth for messages
+- Side effects survive bot restarts and network blips
+- State and side effects can't diverge
+- Users are told they're approved only after they actually have the role
+- CLI can inspect and retry failed jobs (`outbox retry` resets the attempt budget)
 
 ## Adapters Layer: External Integrations
 
@@ -322,20 +288,22 @@ File: `src/adapters/discord/DiscordClient.ts` and `src/adapters/discord/Verifica
 - Provides start() and shutdown() methods
 - Exposes raw SDK for event binding
 
-**VerificationBot** binds Discord events to orchestrator:
+**VerificationBot** translates Discord events into orchestrator calls. It holds no workflow or authorization rules itself:
 
-- **Slash Commands**: Routes /verify, /verify-decision, /verify-reset
-- **Direct Messages**: Handles hall and room selection
-- **Reactions**: Processes emoji approvals on queue messages
+- **Member join** → `onMemberJoined`
+- **/verify** → `onUserJoined`; **/verify-reset** → `onUserReset`
+- **/verify-decision** → `onRAResponded`, replying with a message for each result (`not_found`, `not_pending`, `unauthorized`, `conflict`)
+- **Direct Messages** → `onDirectMessage`
+- **Reactions** → `canDecide` check (silently removes reactions from non-RAs), then `onRAResponded`
 
-**Authorization:**
+If a handler throws after deferring a reply, the bot edits the reply with an error, so users aren't left on "thinking...".
 
-RAs can only approve cases from their hall. Check order:
-1. Is user a moderator? → Yes, can approve anything
-2. Does case have a hall? → No, reject
-3. Get hall configuration and RA role ID
-4. Fetch user's roles from Discord
-5. Does user have the RA role? → Yes, authorized
+**Authorization** (in the orchestrator):
+1. The case owner can never decide their own case
+2. Moderators (`ADMINS_IDS`) can decide any case
+3. Otherwise the user must have the hall's RA role
+
+The admin CLI passes `asAdmin`, which skips these checks.
 
 **Partial Object Handling:**
 
@@ -346,256 +314,153 @@ if (user.partial) user = await user.fetch()
 if (reaction.partial) reaction = await reaction.fetch()
 ```
 
-**Race Condition Protection:**
-
-When multiple RAs react simultaneously, optimistic locking prevents double-approval. If another RA wins the race, the orchestrator throws a version error. The bot catches this, removes the reaction, and logs that the case was already processed.
-
 #### Background Workers
 
 Files: `src/adapters/scheduler/OutboxWorker.ts` and `src/adapters/scheduler/TimeoutWorker.ts`
 
-**OutboxWorker** (runs every 2 seconds):
+Both start only after the Discord client is ready.
 
-1. Get up to 10 pending messages via `takeDue(batchSize)`
-2. For each message:
-   - Try to send via Discord
-   - If success: mark sent
-   - If failure:
-     - If max retries exceeded: mark permanently failed
-     - Else: schedule retry with exponential backoff
-3. Reschedule next tick in 2 seconds
+**OutboxWorker** (runs every 2 seconds): see [Outbox Pattern](#outbox-pattern). One failed job doesn't stop the others.
 
-Error handling: One failed message doesn't stop processing others. Each message processed independently.
-
-**TimeoutWorker** (runs every 60 seconds):
-
-1. Get all cases in awaiting_ra state
-2. For each case:
-   - If expired (expiresAt <= now): call orchestrator.expire()
-   - If reminder not sent and elapsed time matches reminder hour:
-     - Queue reminder DM
-     - Mark reminder sent to prevent duplicates
-3. Reschedule next tick in 60 seconds
-
-Reminders work with idempotency keys to prevent duplicate DMs if the worker crashes mid-operation.
+**TimeoutWorker** (runs every 60 seconds), for each `awaiting_ra` case:
+- If `expiresAt <= now`: `orchestrator.expire()`
+- Otherwise, count the `reminder_hours` thresholds elapsed since `submittedAt`. If that's more than `remindersSent`, call `orchestrator.sendReminder()`. It DMs the user, posts `ra_reminder` to the hall queue (with a `Case ID:` line RAs can react to), and records the count
+- Errors are logged per case, so one bad case doesn't block the rest
 
 ## Data Flow: Complete Verification Journey
 
 ### User Initiates Verification
 
-1. User runs `/verify` in Discord
-2. DiscordBot.startVerification() handles command
-3. Orchestrator.onUserJoined() is called
-   - Creates case in database (state: joined)
-   - Queues welcome DM via outbox
-4. User sees "Check your DMs"
+1. A member joins (or runs `/verify`)
+2. `onMemberJoined` / `onUserJoined`, in one transaction:
+   - creates the case in `joined`
+   - queues the unverified role (join only)
+   - queues the welcome DM
+3. Already verified this term? The user is told so instead; on rejoin the hall role is re-granted
 
-### User Selects Hall
+### User Provides Hall, Room Number, Unit
 
-1. User DMs "North" to bot
-2. DiscordBot.handleMessage() receives DM
-3. Gets user's active case from database
-4. Case state is "joined", so calls orchestrator.onHallChosen(userId, "North")
-5. Orchestrator:
-   - Validates hall via DiscordService
-   - Updates case to "hall_chosen" state
-   - Queues confirmation message via outbox
-6. OutboxWorker picks up message and sends it
-7. User sees "Thanks for North Hall. Which room?"
-
-### User Selects Room
-
-1. User DMs "A101" to bot
-2. DiscordBot.handleMessage() receives DM
-3. Case state is "hall_chosen", so calls orchestrator.onRoomEntered(userId, "A101")
-4. Orchestrator:
-   - Normalizes room (uppercase, trim)
-   - Validates against hall's room pattern
-   - Updates case to "awaiting_ra" state
-   - Sets expiration timer (e.g., 72 hours from now)
-   - Queues message to RA queue channel with case details
-5. OutboxWorker sends queue message with case ID and approval buttons
-6. RAs see: "Case ID: clx123...\nUser: user123\nHall: North\nRoom: A101"
+1. The user DMs the bot; `onDirectMessage` routes on case state
+2. `joined`: the hall is resolved by name/alias → `hall_chosen`, then the bot asks for the room number
+3. `hall_chosen`: a hall name changes the hall; otherwise the text is validated as the room number → `room_number_entered`
+4. `room_number_entered`: the unit is validated, `{prefix}-{number}-{unit}` is checked against the hall pattern → `awaiting_ra`. In the same transaction:
+   - set `expiresAt` / `submittedAt`
+   - queue the user notice
+   - queue the RA queue card (ending in `Case ID: …`)
 
 ### RA Approves/Denies
 
-**Via Slash Command:**
+Via `/verify-decision case_id decision [reason]`, or by reacting ✅/❌ on the queue card:
 
-1. RA runs `/verify-decision case-id approve`
-2. DiscordBot.handleDecision() validates:
-   - Case exists and is in awaiting_ra
-   - RA is authorized (has RA role or is moderator)
-3. Calls orchestrator.onRAResponded(caseId, raUserId, "approve", reason)
-4. Orchestrator:
-   - Checks version matches (optimistic locking)
-   - Updates case to "approved" state
-   - Assigns hall role to user
-   - Queues approval message via outbox
-   - Records decision in Decision table
-   - Logs action in AuditLog
-5. OutboxWorker sends approval message to user
+1. The orchestrator checks the case exists and is `awaiting_ra`, then authorizes the actor
+2. In one transaction it:
+   - updates the state (version-checked)
+   - records the decision and audit entry
+   - queues side effects: on approval, a `role_add` for the hall role carrying the "approved" DM as a follow-up, plus a `role_remove` for the unverified role; on denial, the denial DM
+   - queues a decision ack to the queue channel
+3. If another RA won the race, the result is `conflict` and nothing is written
 
-**Via Emoji Reaction:**
+### Timeout, Expiration, and Reminders
 
-1. RA reacts with ✅ on queue message
-2. DiscordBot.handleReaction() processes reaction:
-   - Fetches partial objects (user, reaction, message)
-   - Validates it's a bot message in the guild
-   - Extracts case ID from message content via regex
-   - Checks if case exists and is awaiting_ra
-   - Verifies RA is authorized
-3. Calls orchestrator.onRAResponded() same as above
-4. Removes reaction to indicate it was processed
+See TimeoutWorker above. Expired users get the `expired` DM and can run `/verify` again.
 
-### Timeout and Expiration
+### Resets
 
-1. TimeoutWorker checks awaiting_ra cases every 60 seconds
-2. If case.expiresAt <= now:
-   - Calls orchestrator.expire()
-   - Updates case to "expired" state
-   - Queues expiration message via outbox
-3. User receives: "Your verification request has expired. Run /verify to try again"
+- `/verify-reset` cancels a case that hasn't reached RA review yet. After that, the user has to wait for the RA or the timeout
+- `npm run cli -- case reset-user <id>` cancels active and approved cases, queues removal of the hall role, and re-adds the unverified role
 
-### Reminders
-
-1. TimeoutWorker checks awaiting_ra cases every 60 seconds
-2. If case.reminderSentAt is null and enough time has elapsed:
-   - Calculates hours since case.updatedAt
-   - Checks if hours >= any configured reminder hour
-   - Queues reminder DM with hall and room info
-   - Marks reminderSentAt to prevent duplicates
-3. User receives: "Your verification is still pending. Hall: North, Room: A101"
+Cases are never deleted, so the audit trail is preserved.
 
 ## Message Reliability
 
-The outbox pattern ensures messages are delivered at least once:
+**Scenario: Bot crashes mid-transition**
 
-**Scenario: Bot crashes while sending message**
+The transaction rolls back. Nothing was written, and the user's next message (or the RA's next click) retries cleanly.
 
-1. Message queued with status: pending, nextAttemptAt: now
-2. OutboxWorker fetches it
-3. Sends to Discord
-4. Bot crashes before marking sent
-5. On restart, OutboxWorker sees pending message
-6. Tries to send again (idempotency key prevents duplicate in Discord)
-7. Marks sent
+**Scenario: Bot crashes while sending**
 
-**Scenario: Network error**
+The job is still `pending` (its lease expires after 60s), so it is retried. Delivery is at-least-once, so a crash in the narrow window between Discord accepting a message and `markSent` can produce a duplicate.
 
-1. Message queued, status: pending
-2. OutboxWorker tries to send
-3. Network error thrown
-4. Message marked: status: pending, nextAttemptAt: now + 5 seconds
-5. OutboxWorker retries in 5 seconds
-6. Success, marks sent
+**Scenario: Max attempts exceeded**
 
-**Scenario: Max retries exceeded**
-
-1. Message fails 5 times
-2. OutboxWorker marks: status: failed
-3. Admin can view failed messages: `npm run cli -- outbox list -s failed`
-4. Admin can retry: `npm run cli -- outbox retry job-id`
-5. Message reset to pending, processed again
+1. The job is marked `failed`
+2. View failed jobs: `npm run cli -- outbox list -s failed`
+3. Retry: `npm run cli -- outbox retry <jobId>` resets it to pending with a fresh attempt budget
 
 ## Concurrency and Race Conditions
 
 ### Case State Updates
 
-Multiple RAs might respond to the same case simultaneously. The orchestrator uses optimistic locking:
+1. RA1 and RA2 both read the case at version 5
+2. RA1's `UPDATE ... WHERE version = 5` succeeds (now 6)
+3. RA2's update matches 0 rows → `ConcurrencyError`, and its transaction (decision, audit, outbox) rolls back
+4. RA2 gets "Case was just decided by someone else" (slash command) or has their reaction removed
 
-1. RA1 fetches case, version: 5
-2. RA2 fetches case, version: 5
-3. RA1 updates case WHERE version = 5, increments to 6 ✓
-4. RA2 updates case WHERE version = 5 ✗ (now version 6)
-5. RA2's update fails, orchestrator throws error
-6. DiscordBot catches error, logs "case already processed"
-7. RA2's reaction removed to indicate conflict
+### Duplicate Cases
+
+A member join and a `/verify` arriving together both try to create a case. The partial unique index rejects the second insert, and the orchestrator retries once, taking the "already in progress" path.
 
 ### Message Duplication
 
-Idempotency keys prevent duplicate messages if operations are retried:
-
-1. Orchestrator queues DM with idempotencyKey: "room-entry-user123"
-2. Message inserted into database
-3. OutboxWorker processes it
-4. Send succeeds but database update fails (crash)
-5. Bot restarts, OutboxWorker fetches same message again
-6. Sends again, but Discord deduplicates based on content
-7. Idempotency key in database prevents duplicate database record
-
-### Worker Crashes
-
-Workers use timeouts with proper cleanup:
-
-1. OutboxWorker starts tick() at 2s interval
-2. Tick processes batch and schedules next tick
-3. If error occurs, catch block logs it and reschedules
-4. If bot crashes mid-tick, database state is preserved
-5. On restart, workers resume from database state
+Each enqueue carries an idempotency key derived from the triggering event (interaction ID, message ID, case ID + reminder number, …). Re-processing the same event enqueues nothing new.
 
 ## Dependency Injection
 
-File: `src/infra/container.ts`
+File: `src/infra/container.ts` (bot) and `src/cli/container.ts` (CLI)
 
-The container wires all dependencies together at startup:
+The bot container:
 
-1. Load environment variables and validate with Zod
-2. Initialize Prisma client and connect to database
-3. Initialize logger with redaction for sensitive fields
-4. Create Config service from policy.json
-5. Create repository implementations (Prisma-based)
-6. Create DiscordService
-7. Create VerificationOrchestrator with all dependencies
-8. Create DiscordClient and VerificationBot
-9. Start background workers
-10. Connect Discord bot to Discord
+1. Loads and validates `config/policy.json` (`ConfigImpl.fromFile()`)
+2. Creates the Prisma client, repositories, `PrismaUnitOfWork`, `DiscordServiceImpl`
+3. Creates the `VerificationOrchestrator` (with `ADMINS_IDS` as moderators) and binds `VerificationBot`
+4. `start()`:
+   - connects the database
+   - logs in to Discord and waits for ready
+   - starts the workers
+   - starts watching `policy.json` and listening for SIGHUP
 
-This allows swapping implementations (e.g., mock repositories for testing) by changing the container.
+The CLI container builds the same orchestrator with an offline `DiscordService`. Admin actions only write to the database and outbox, and the running bot delivers them.
 
 ## Scaling Considerations
 
 ### Current Limitations
 
-- Single instance deployment (no distributed worker coordination)
+- Single bot instance assumed (outbox claiming is already safe for more than one worker, but the TimeoutWorker isn't coordinated)
 - In-memory hall directory (small number of halls)
 - No database connection pooling configuration
-- Outbox worker processes one batch at a time
 
 ### For Scaling Up
 
-1. **Multiple Bot Instances**: Use database lock on outbox worker to ensure only one instance processes messages at a time
+1. **Multiple Bot Instances**: Coordinate the TimeoutWorker (e.g., Postgres advisory lock); idempotency keys already make duplicate expiry or reminder attempts harmless
 2. **High Volume**: Increase outbox batchSize and worker interval based on message throughput
 3. **Database**: Enable Prisma connection pooling (PgBouncer) for PostgreSQL
-4. **Caching**: Add Redis for hall directory caching across instances
-5. **Monitoring**: Add metrics for case throughput, message delivery latency, error rates
+4. **Monitoring**: Add metrics for case throughput, message delivery latency, error rates
 
 ## Security Considerations
 
 1. **Environment Variables**: Sensitive data (.env) stored locally, never committed
 2. **Discord Tokens**: Logged with redaction in logger, never exposed in errors
-3. **Authorization**: All RA operations checked against Discord roles
-4. **SQL Injection**: Prisma prevents via prepared statements
+3. **Authorization**: Centralized in the orchestrator, using Discord roles plus the `ADMINS_IDS` moderator list; self-verification is always refused
+4. **SQL Injection**: Prisma prevents via prepared statements (the one raw query is a tagged template with bound parameters)
 5. **Idempotency Keys**: Prevent replay attacks and double-submissions
 6. **Error Messages**: Avoid leaking internal IDs or database errors to users
 
 ## Testing Strategy
 
-The hexagonal architecture enables comprehensive testing:
-
-1. **Unit Tests**: Test orchestrator with mock repositories (no database needed)
-2. **Integration Tests**: Test with real Prisma SQLite in-memory database
-3. **E2E Tests**: Run full bot against test Discord server
-
-Example test of orchestrator without database:
+1. **Unit Tests** (`src/tests/core`, `src/tests/workers`): Orchestrator and workers with mocked ports. The mocked `UnitOfWork` hands the work the same repository mocks
+2. **Integration Tests** (`src/tests/repositories`): Run against a real migrated PostgreSQL when `TEST_DATABASE_URL` is set (CI sets it). They cover:
+   - concurrent version-checked updates
+   - the one-active-case index
+   - transaction rollback
+   - idempotent enqueue inside a transaction
+   - outbox claiming and the timezone handling of its lease
+   - audit-protected deletes
+3. **Manual E2E**: Run the bot against a test Discord server
 
 ```typescript
-const mockCaseRepo = {
-  getActiveCase: vi.fn().mockResolvedValue(null),
-  createIfNone: vi.fn().mockResolvedValue({ id: 'case1', state: 'joined' })
-}
-const orchestrator = new VerificationOrchestrator(mockCaseRepo, ...)
-await orchestrator.onUserJoined('user1', 'msg1')
-expect(mockCaseRepo.createIfNone).toHaveBeenCalledWith('user1', 'term')
+const uow = { run: vi.fn((work) => work({ cases, decisions, audit, outbox })) };
+const orchestrator = new VerificationOrchestrator({ discord, config, cases, uow, logger, moderatorIds: ['mod-1'] });
+await expect(orchestrator.onRAResponded('case-1', 'mod-1', 'approve')).resolves.toEqual({ ok: true, state: 'approved' });
 ```
 
 ## Summary

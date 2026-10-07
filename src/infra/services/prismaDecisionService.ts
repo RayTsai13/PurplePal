@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import type { PrismaClient } from '../../../generated/prisma';
+import type { Prisma } from '../../../generated/prisma';
 import type { DecisionRepository } from '../../core/ports';
 
 // Use provided idempotency key or generate random UUID if not provided
@@ -8,7 +8,7 @@ const ensureIdempotencyKey = (provided?: string): string => provided ?? crypto.r
 
 // Prisma repository implementing DecisionRepository port interface
 export class PrismaDecisionRepository implements DecisionRepository {
-  constructor(private readonly prisma: PrismaClient) {}
+  constructor(private readonly prisma: Prisma.TransactionClient) {}
 
   // Record RA decision (approve or deny)
   // upsert: update if exists, create if doesn't (idempotency key prevents duplicates)

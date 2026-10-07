@@ -1,28 +1,49 @@
 // Lightweight dependency injection container for CLI
-// Only loads database and config services, no Discord client or background workers
+// Loads database, config, and an orchestrator without a Discord connection or background workers.
+// Discord side effects (DMs, role changes) are written to the outbox and delivered by the running bot
 // Uses singleton pattern to reuse container across commands
 
-import fs from 'fs';
-import path from 'path';
 import { PrismaClient } from '../../generated/prisma';
-import { PolicySchema, type PolicyConfig } from '../infra/config/policySchema';
 import { ConfigImpl } from '../infra/services/Config';
 import { PrismaCaseRepository } from '../infra/services/prismaCaseService';
 import { PrismaAuditRepository } from '../infra/services/prismaAuditService';
 import { PrismaOutboxRepository } from '../infra/services/prismaOutboxService';
-import type { Config, CaseRepository, AuditRepository, OutboxRepository } from '../core/ports';
+import { PrismaUnitOfWork } from '../infra/services/prismaUnitOfWork';
+import { VerificationOrchestrator } from '../core/application/orchestrator/VerificationOrchestrator';
+import { logger } from '../infra/logger';
+import type {
+  Config,
+  CaseRepository,
+  AuditRepository,
+  OutboxRepository,
+  DiscordService,
+} from '../core/ports';
 
 // Container shape for CLI commands
-// Includes configImpl for direct access to reload functionality
 export interface CliContainer {
   config: Config;
-  configImpl: ConfigImpl;
   cases: CaseRepository;
   audit: AuditRepository;
   outbox: OutboxRepository;
+  orchestrator: VerificationOrchestrator;
   prisma: PrismaClient;
   disconnect: () => Promise<void>;
 }
+
+// The CLI has no Discord connection. Admin paths in the orchestrator (asAdmin decisions, admin
+// expire/reset) never call these; reaching one is a bug, so fail loudly
+const unavailable = (operation: string) => async (): Promise<never> => {
+  throw new Error(`${operation} is not available from the CLI`);
+};
+
+const offlineDiscord: DiscordService = {
+  normalizeRoom: unavailable('normalizeRoom'),
+  sendDM: unavailable('sendDM'),
+  sendToQueue: unavailable('sendToQueue'),
+  assignRoles: unavailable('assignRoles'),
+  removeRoles: unavailable('removeRoles'),
+  isRaForHall: unavailable('isRaForHall'),
+};
 
 // Cached container instance (singleton pattern)
 let container: CliContainer | null = null;
@@ -35,16 +56,19 @@ export async function getCliContainer(): Promise<CliContainer> {
     return container;
   }
 
-  const { policyConfig, configPath } = loadPolicyConfig();
+  const config = ConfigImpl.fromFile();
   const prisma = new PrismaClient();
 
   await prisma.$connect();
 
-  const configImpl = new ConfigImpl(policyConfig, configPath);
-  const config: Config = configImpl;
-  const cases: CaseRepository = new PrismaCaseRepository(prisma);
-  const audit: AuditRepository = new PrismaAuditRepository(prisma);
-  const outbox: OutboxRepository = new PrismaOutboxRepository(prisma);
+  const cases = new PrismaCaseRepository(prisma);
+  const orchestrator = new VerificationOrchestrator({
+    discord: offlineDiscord,
+    config,
+    cases,
+    uow: new PrismaUnitOfWork(prisma),
+    logger,
+  });
 
   // disconnect function closes database and resets singleton
   const disconnect = async (): Promise<void> => {
@@ -52,21 +76,14 @@ export async function getCliContainer(): Promise<CliContainer> {
     container = null;
   };
 
-  container = { config, configImpl, cases, audit, outbox, prisma, disconnect };
+  container = {
+    config,
+    cases,
+    audit: new PrismaAuditRepository(prisma),
+    outbox: new PrismaOutboxRepository(prisma),
+    orchestrator,
+    prisma,
+    disconnect,
+  };
   return container;
-}
-
-// Load and validate policy config from JSON file
-// Returns both the config and the path for hot-reload capability
-// Throws if file not found or validation fails
-function loadPolicyConfig(): { policyConfig: PolicyConfig; configPath: string } {
-  const configPath = path.resolve(process.cwd(), 'config/policy.json');
-  try {
-    const fileContents = fs.readFileSync(configPath, 'utf-8');
-    const raw = JSON.parse(fileContents);
-    const policyConfig = PolicySchema.parse(raw);
-    return { policyConfig, configPath };
-  } catch (error) {
-    throw new Error(`Failed to read configuration file at ${configPath}: ${(error as Error).message}`);
-  }
 }

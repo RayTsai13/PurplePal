@@ -32,6 +32,10 @@ services:
       GUILD_ID: ${GUILD_ID}
       ADMINS_IDS: ${ADMINS_IDS:-}
       NODE_ENV: production
+    volumes:
+      # Use the host's policy.json so edits take effect without rebuilding the image.
+      # Reload with: docker compose kill -s HUP bot
+      - ./config:/app/config:ro
     restart: unless-stopped
 
 volumes:

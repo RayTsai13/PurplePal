@@ -10,30 +10,53 @@ jobs:
   lint-test-build:
     runs-on: ubuntu-latest
 
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: purplepal
+          POSTGRES_PASSWORD: purplepal
+          POSTGRES_DB: purplepal
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U purplepal"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://purplepal:purplepal@localhost:5432/purplepal
+      # Enables the repository integration tests in src/tests/repositories
+      TEST_DATABASE_URL: postgresql://purplepal:purplepal@localhost:5432/purplepal
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v2
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'pnpm'
+          cache: 'npm'
 
       - name: Install dependencies
-        run: pnpm install
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      - name: Apply migrations
+        run: npx prisma migrate deploy
 
       - name: Lint (TypeScript type check)
-        run: pnpm lint
+        run: npm run lint
 
       - name: Run tests
-        run: pnpm test
+        run: npm test
 
       - name: Build
-        run: pnpm build
+        run: npm run build
 
   docker-build:
     runs-on: ubuntu-latest
