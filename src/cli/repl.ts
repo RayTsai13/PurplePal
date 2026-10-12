@@ -1,15 +1,22 @@
 import * as readline from 'readline';
 import chalk from 'chalk';
-import { getCliContainer } from './container';
+import { getCliContainer, type CliContainer } from './container';
+import { forceDecide, forceExpire, resetUser, type ActionResult } from './actions/case';
 import { printTable, printError, printInfo } from './utils/output';
 
-interface Container {
-  cases: any;
-  prisma: any;
-  config: any;
-  audit: any;
-  disconnect: () => Promise<void>;
-}
+type Container = CliContainer;
+
+// Value following a flag like "-r", if present
+const flagValue = (args: string[], flag: string): string | undefined =>
+  args.includes(flag) ? args[args.indexOf(flag) + 1] : undefined;
+
+const printResult = (result: ActionResult): void => {
+  if (result.ok) {
+    printInfo(`✓ ${result.message}`);
+  } else {
+    printError(result.message);
+  }
+};
 
 // Command handler interface
 interface CommandHandler {
@@ -42,7 +49,8 @@ const handlers: Record<string, CommandHandler> = {
         ['RA User ID', kase.raUserId || '-'],
         ['Version', kase.version.toString()],
         ['Expires At', kase.expiresAt?.toLocaleString() || '-'],
-        ['Reminder Sent', kase.reminderSentAt?.toLocaleString() || '-'],
+        ['Submitted At', kase.submittedAt?.toLocaleString() || '-'],
+        ['Reminders Sent', kase.remindersSent.toString()],
         ['Updated At', kase.updatedAt?.toLocaleString() || '-'],
       ],
     );
@@ -104,87 +112,28 @@ const handlers: Record<string, CommandHandler> = {
     );
   },
 
-  'case:force-expire': async (args, { cases, audit }) => {
+  'case:force-expire': async (args, container) => {
     if (args.length < 1) {
       printError('Usage: case force-expire <caseId> [-r reason]');
       return;
     }
-    const caseId = args[0];
-    const kase = await cases.findById(caseId);
-    if (!kase) {
-      printError(`Case ${caseId} not found`);
-      return;
-    }
-    if (kase.state === 'approved' || kase.state === 'denied' || kase.state === 'expired') {
-      printError(`Case is already in terminal state: ${kase.state}`);
-      return;
-    }
-    await cases.updateState(caseId, kase.version, 'expired');
-    await audit.record(
-      caseId,
-      'cli_force_expire',
-      kase.state,
-      'expired',
-      'system',
-      'cli',
-      { reason: 'Manual expiration via CLI' },
-    );
-    printInfo(`✓ Case ${caseId} expired successfully`);
+    printResult(await forceExpire(container, args[0], flagValue(args, '-r')));
   },
 
-  'case:force-decide': async (args, { cases, audit, prisma }) => {
+  'case:force-decide': async (args, container) => {
     if (args.length < 2) {
-      printError('Usage: case force-decide <caseId> <approve|deny>');
+      printError('Usage: case force-decide <caseId> <approve|deny> [-r reason]');
       return;
     }
-    const caseId = args[0];
-    const decision = args[1];
-    if (decision !== 'approve' && decision !== 'deny') {
-      printError('Decision must be "approve" or "deny"');
-      return;
-    }
-    const kase = await cases.findById(caseId);
-    if (!kase) {
-      printError(`Case ${caseId} not found`);
-      return;
-    }
-    if (kase.state !== 'awaiting_ra') {
-      printError(`Case is not awaiting RA review (current state: ${kase.state})`);
-      return;
-    }
-    const newState = decision === 'approve' ? 'approved' : 'denied';
-    await cases.updateState(caseId, kase.version, newState as 'approved' | 'denied', {
-      raUserId: 'cli-admin',
-    });
-    await prisma.decision.create({
-      data: {
-        caseId,
-        raUserId: 'cli-admin',
-        decision: decision as 'approve' | 'deny',
-        idempotencyKey: `cli-${caseId}-${Date.now()}`,
-      },
-    });
-    await audit.record(
-      caseId,
-      `cli_force_${decision}`,
-      'awaiting_ra',
-      newState,
-      'system',
-      'cli',
-      { reason: `Admin override via CLI` },
-    );
-    printInfo(`✓ Case ${caseId} ${decision}d successfully`);
+    printResult(await forceDecide(container, args[0], args[1], flagValue(args, '-r')));
   },
 
-  'case:reset-user': async (args, { cases, config }) => {
+  'case:reset-user': async (args, container) => {
     if (args.length < 1) {
-      printError('Usage: case reset-user <userId> [-t term]');
+      printError('Usage: case reset-user <userId> [-t term] [-r reason]');
       return;
     }
-    const userId = args[0];
-    const term = args.includes('-t') ? args[args.indexOf('-t') + 1] : config.currentTerm();
-    await cases.resetCase(userId, term);
-    printInfo(`✓ Reset verification for user ${userId} in term ${term}`);
+    printResult(await resetUser(container, args[0], flagValue(args, '-t'), flagValue(args, '-r')));
   },
 
   status: async (args, { cases, prisma, config }) => {
@@ -309,9 +258,9 @@ ${chalk.cyan('PurplePal CLI Interactive Mode')}
 ${chalk.yellow('Case Commands:')}
   case inspect <caseId>           - View case details and audit trail
   case list-pending               - List cases awaiting RA review
-  case force-expire <caseId>      - Manually expire a case
+  case force-expire <caseId>      - Manually expire an active case
   case force-decide <caseId> <approve|deny> - Override RA decision
-  case reset-user <userId>        - Clear user's verification
+  case reset-user <userId>        - Cancel user's cases and revoke hall role
 
 ${chalk.yellow('System Commands:')}
   status                          - Show system health and statistics

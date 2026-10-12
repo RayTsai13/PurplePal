@@ -55,4 +55,5 @@ USER purplepal
 ENV NODE_ENV=production
 
 # Run migrations and start the application
-CMD ["sh", "-c", "npx prisma migrate deploy && node dist/index.js"]
+# exec replaces the shell so node is PID 1 and receives SIGTERM (graceful shutdown) and SIGHUP (config reload)
+CMD ["sh", "-c", "npx prisma migrate deploy && exec node dist/index.js"]

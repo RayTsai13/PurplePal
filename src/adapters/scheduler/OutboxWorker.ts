@@ -1,14 +1,10 @@
-import type { DiscordService, OutboxRepository, Config } from '../../core/ports';
-
-// Compatibility type aliases for clearer intent
-type NotificationService = DiscordService;
-type OutboxService = OutboxRepository;
+import type { DiscordService, OutboxRepository, OutboxJob, Config } from '../../core/ports';
 import { logger } from '../../infra/logger';
 
 // Dependencies for outbox worker
 export interface OutboxWorkerDeps {
-  outbox: OutboxService;
-  notification: NotificationService;
+  outbox: OutboxRepository;
+  notification: DiscordService;
   policy: Config;
   batchSize?: number;
   intervalMs?: number;
@@ -73,62 +69,92 @@ export const startOutboxWorker = ({
   };
 };
 
-// Process a batch of pending outbox messages with exponential backoff retry
+// Process a batch of pending outbox jobs with exponential backoff retry
 export const processOutboxBatch = async (
-  outbox: OutboxService,
-  notification: NotificationService,
+  outbox: OutboxRepository,
+  notification: DiscordService,
   policy: Config,
   batchSize: number,
 ): Promise<void> => {
-  // Fetch up to batchSize messages ready for sending (takeDue locks them for 60s)
+  // Claim up to batchSize jobs ready for processing (takeDue leases them for 60s)
   const jobs = await outbox.takeDue(batchSize);
   if (jobs.length === 0) {
     return;
   }
 
-  // Get retry limits and backoff intervals from policy
   const limits = policy.limits();
-  const backoffs = limits.notificationBackoffSeconds;
 
   // Process each job independently so one failure doesn't stop others
   for (const job of jobs) {
+    // Role changes and messages have separate retry budgets
+    const isRoleJob = job.kind === 'role_add' || job.kind === 'role_remove';
+    const maxAttempts = isRoleJob ? limits.roleAssignMaxRetries : limits.maxNotificationRetries;
+    const backoffs = isRoleJob ? limits.roleAssignRetryBackoffSeconds : limits.notificationBackoffSeconds;
+
     try {
-      // Payload must exist to send message (userId/channelId and template data)
-      if (!job.payload) {
-        throw new Error('Missing payload');
-      }
+      await executeJob(job, notification);
 
-      // Send message to correct destination (DM or queue channel)
-      if (job.kind === 'dm') {
-        await notification.sendDM(job.payload.targetId, job.template, job.payload.data, job.id);
-      } else {
-        await notification.sendToQueue(job.payload.targetId, job.template, job.payload.data, job.id);
-      }
-
-      // Mark as successfully sent
       await outbox.markSent(job.id);
-      logger.info({ jobId: job.id, kind: job.kind, target: job.payload.targetId }, 'Outbox job delivered');
-    } catch (err) {
-      // Extract error message for logging and storage
-      const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+      logger.info({ jobId: job.id, kind: job.kind, target: job.payload?.targetId }, 'Outbox job delivered');
 
-      // Check if we've exceeded max retry attempts
-      if (job.attempts >= limits.maxNotificationRetries) {
-        // Give up permanently
+      // Chained DM (e.g. "approved" after the hall role is granted). Keyed on the job ID so a crash
+      // between markSent and here can't produce a duplicate on a later retry
+      const followUp = job.payload?.followUp;
+      if (followUp) {
+        await outbox.enqueueDM(followUp.userId, followUp.template, followUp.data, {
+          caseId: job.caseId,
+          idempotencyKey: `${job.id}-followup`,
+        });
+      }
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+      // job.attempts counts previous attempts; this failure is attempt number attempts + 1
+      const attemptNumber = job.attempts + 1;
+
+      if (attemptNumber >= maxAttempts) {
         await outbox.markPermanentlyFailed(job.id, errorMessage);
         logger.error(
-          { jobId: job.id, attempts: job.attempts, maxRetries: limits.maxNotificationRetries, err },
-          'Outbox job permanently failed after max retries',
+          { jobId: job.id, kind: job.kind, attempts: attemptNumber, maxAttempts, err },
+          'Outbox job permanently failed after max attempts',
         );
       } else {
-        // Schedule retry with exponential backoff
-        // Math.min ensures we don't go beyond the backoffs array length
-        // ?? provides fallback to 60s if array is too short
+        // Schedule retry with backoff; reuse the last interval if the array is shorter than maxAttempts
         const delaySeconds = backoffs[Math.min(job.attempts, backoffs.length - 1)] ?? 60;
         const retryAt = new Date(Date.now() + delaySeconds * 1000);
         await outbox.markFailed(job.id, errorMessage, retryAt);
-        logger.warn({ jobId: job.id, attempts: job.attempts, err }, 'Outbox delivery failed, will retry');
+        logger.warn({ jobId: job.id, kind: job.kind, attempts: attemptNumber, err }, 'Outbox job failed, will retry');
       }
+    }
+  }
+};
+
+// Perform one job's side effect. Throws on failure so the caller can schedule a retry
+const executeJob = async (job: OutboxJob, notification: DiscordService): Promise<void> => {
+  if (!job.payload) {
+    throw new Error('Missing payload');
+  }
+  const { targetId, data } = job.payload;
+
+  switch (job.kind) {
+    case 'dm':
+      await notification.sendDM(targetId, job.template, data, job.id);
+      return;
+    case 'channel':
+      await notification.sendToQueue(targetId, job.template, data, job.id);
+      return;
+    case 'role_add':
+    case 'role_remove': {
+      const roleIds = Array.isArray(data?.roleIds) ? (data.roleIds as string[]) : [];
+      if (roleIds.length === 0) {
+        throw new Error('Role job has no roleIds');
+      }
+      const result = job.kind === 'role_add'
+        ? await notification.assignRoles(targetId, roleIds, job.id)
+        : await notification.removeRoles(targetId, roleIds, job.id);
+      if (result.status !== 'success') {
+        throw new Error(result.details ?? `Role change ${result.status}`);
+      }
+      return;
     }
   }
 };

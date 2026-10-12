@@ -10,7 +10,11 @@ export type CaseState =
   | "awaiting_ra"
   | "approved"
   | "denied"
-  | "expired";
+  | "expired"
+  | "cancelled";
+
+// States in which a case is still in progress. The database allows at most one per user per term
+export const ACTIVE_CASE_STATES: readonly CaseState[] = ["joined", "hall_chosen", "room_number_entered", "awaiting_ra"];
 
 export interface CaseRecord {
   id: string;             // unique case ID
@@ -23,7 +27,9 @@ export interface CaseRecord {
   raUserId?: string;      // RA who verified them - optional (might not be done yet)
   version: number;        // increments on each update for race condition prevention
   expiresAt?: Date;       // when this case expires - optional. Date is a TypeScript type for timestamps
+  submittedAt?: Date;     // when the case entered awaiting_ra - reminders are measured from here
   reminderSentAt?: Date;  // when reminder was last sent - optional
+  remindersSent: number;  // how many reminder_hours thresholds have already been sent
   updatedAt: Date;        // timestamp of last update - always present
 }
 
@@ -37,8 +43,13 @@ export interface HallConfig {
   queueChannelId: string; // Discord channel where RA verification requests appear
   hallRoleId: string;     // Discord role given to users after they verify for this hall
   room?: {
-    pattern: string;      // regex pattern to validate room numbers (like ^A-\\d{3}-[A-D]$)
-    example: string;      // example room to show users (like A-101-B)
+    pattern: string;            // regex pattern to validate the full room (like ^A-\\d{3}-[A-D]$)
+    example: string;            // example room to show users (like A-101-B)
+    prefix: string;             // building prefix joined with room number and unit (like A)
+    roomNumberPattern: string;  // regex the room number step must match (like ^\\d{3}$)
+    roomNumberExample: string;  // example room number shown to users (like 312)
+    unitPattern: string;        // regex the unit step must match, applied after uppercasing (like ^[A-D]$)
+    unitExample: string;        // example unit shown to users (like A)
   };
 }
 
@@ -56,10 +67,40 @@ export interface LimitsConfig {
   roleAssignRetryBackoffSeconds: number[];  // delays between role assignment retries
 }
 
+// DM templates sent to the user being verified. Every key the code uses is listed so a missing
+// template is a startup validation error rather than a runtime failure mid-flow
+export interface DmTemplates {
+  welcome_joined?: string;   // used instead of ask_hall when a lobby channel is configured
+  ask_hall: string;
+  invalid_hall: string;
+  ask_room_number: string;
+  invalid_room_number: string;
+  ask_unit: string;
+  invalid_unit: string;
+  invalid_room: string;
+  await_ra_notice: string;
+  reminder_user: string;
+  approved: string;
+  denied: string;
+  expired: string;
+  already_in_progress: string;
+  already_verified: string;
+  system_error: string;
+}
+
+// Templates posted to a hall's RA queue channel
+export interface RaQueueTemplates {
+  ra_verify_card_title: string;
+  ra_verify_card_body: string;
+  ra_reminder: string;
+  unauthorized_attempt: string;
+  decision_ack: string;
+}
+
 // Message templates used throughout the app
 export interface MessageTemplates {
-  dm: Record<string, string>;         // Record<string, string> means object with string keys and string values - all DM templates
-  ra_queue: Record<string, string>;   // all RA queue notification templates
+  dm: DmTemplates;
+  ra_queue: RaQueueTemplates;
 }
 
 // Config interface - all methods return config without needing to await (no async)
@@ -70,6 +111,9 @@ export interface Config {
   limits(): LimitsConfig;         // returns LimitsConfig interface
   messaging(): MessageTemplates;  // returns MessageTemplates interface
   halls(): HallConfig[];          // [] means returns an array of HallConfig
+
+  // Look up a hall by canonical name or alias (case-insensitive). undefined if not configured
+  hall(nameOrAlias: string): HallConfig | undefined;
 
   // Lobby channel where unverified users can chat while awaiting verification
   lobbyChannelId(): string | undefined;
@@ -84,15 +128,6 @@ export interface Config {
 
 // ==================== Discord Operations ====================
 
-// Result object returned when validating a hall name
-export interface HallValidationResult {
-  valid: boolean;           // whether the hall name was recognized
-  normalizedHall?: string;  // the actual hall name if valid (normalized to official name)
-  raRoleId?: string;        // Discord role ID for RAs if found
-  queueChannelId?: string;  // Discord channel ID for RA queue if found
-  hallRoleId?: string;      // Discord role ID to give verified residents if found
-}
-
 // Result object when normalizing/validating a room number
 export interface RoomNormalizationResult {
   valid: boolean;       // whether the room format is correct
@@ -106,10 +141,9 @@ export interface RoleOperationResult {
   details?: string;                           // optional explanation of what happened
 }
 
-// DiscordService handles all Discord interactions - validation, messaging, and roles
+// DiscordService handles Discord interactions - room normalization, messaging, and roles
+// Hall lookup by name/alias lives on Config.hall()
 export interface DiscordService {
-  validateHall(hall: string): Promise<HallValidationResult>; // Promise<T> = async function returning T, use await
-
   normalizeRoom(hall: string, roomRaw: string): Promise<RoomNormalizationResult>;
 
   // data?: Record<string, unknown> = optional object with any string keys and any values (used for template substitution)
@@ -128,6 +162,7 @@ export interface DiscordService {
   ): Promise<void>;
 
   // roleIds: string[] = array of Discord role IDs ([] is array syntax)
+  // These report failure via the result rather than throwing; callers must check status
   assignRoles(userId: string, roleIds: string[], idempotencyKey?: string): Promise<RoleOperationResult>;
   removeRoles(userId: string, roleIds: string[], idempotencyKey?: string): Promise<RoleOperationResult>;
 
@@ -154,17 +189,19 @@ export interface CaseRepository {
     patch?: Partial<CaseRecord>,
   ): Promise<CaseRecord>;
 
-  // Promise<number> = returns how many cases were updated
-  markExpired(filters?: unknown): Promise<number>;
+  // The user's approved case for a term, if they are already verified
+  getApprovedCase(userId: string, term: string): Promise<CaseRecord | null>;
+
+  // All active or approved cases for a user in a term (used by admin reset)
+  listOpenCases(userId: string, term: string): Promise<CaseRecord[]>;
 
   findById(caseId: string): Promise<CaseRecord | null>;
 
   // Promise<CaseRecord[]> = returns array of CaseRecord ([] is array syntax)
   listAwaitingRA(): Promise<CaseRecord[]>;
 
-  markReminderSent(caseId: string, timestamp: Date): Promise<void>;
-
-  resetCase(userId: string, term: string): Promise<void>;
+  // Record that reminders up to `remindersSent` thresholds have been sent
+  markReminderSent(caseId: string, remindersSent: number, timestamp: Date): Promise<void>;
 }
 
 // DecisionRepository saves RA approve/deny decisions
@@ -194,34 +231,61 @@ export interface AuditRepository {
   ): Promise<void>;
 }
 
-// OutboxJob represents a message queued to be sent (stores in database for retry logic)
+export type OutboxKind = 'dm' | 'channel' | 'role_add' | 'role_remove';
+
+// A DM enqueued by the outbox worker only after the job carrying it succeeds
+// (e.g. the "approved" DM is sent once the hall role has actually been granted)
+export interface OutboxFollowUpDM {
+  userId: string;
+  template: string;
+  data?: Record<string, unknown>;
+}
+
+// OutboxJob represents a queued side effect (stored in database for retry logic)
+// dm/channel: targetId is the user/channel, template + data is the message
+// role_add/role_remove: targetId is the user, data.roleIds lists the roles, template is unused
 export interface OutboxJob {
   id: string;
   caseId?: string;
-  kind: 'dm' | 'channel'; // | = or, must be one of these two strings
+  kind: OutboxKind;
   template: string;
   payload?: {
     targetId: string;
     data?: Record<string, unknown>;
+    followUp?: OutboxFollowUpDM;
   };
   attempts: number; // how many times we've tried to send this message
+}
+
+export interface EnqueueOptions {
+  caseId?: string;
+  idempotencyKey?: string;
 }
 
 // OutboxRepository implements reliable message delivery with retries
 export interface OutboxRepository {
   // options?: { ... } = optional object parameter with optional fields inside
+  // Enqueues are idempotent: a second enqueue with the same idempotencyKey is silently ignored
   enqueueDM(
     userId: string,
     template: string,
     data?: Record<string, unknown>,
-    options?: { caseId?: string; idempotencyKey?: string },
+    options?: EnqueueOptions,
   ): Promise<void>;
 
   enqueueChannel(
     channelId: string,
     template: string,
     data?: Record<string, unknown>,
-    options?: { caseId?: string; idempotencyKey?: string },
+    options?: EnqueueOptions,
+  ): Promise<void>;
+
+  // Queue a Discord role change, retried with the roleAssign* limits
+  enqueueRoleChange(
+    userId: string,
+    change: 'add' | 'remove',
+    roleIds: string[],
+    options?: EnqueueOptions & { followUp?: OutboxFollowUpDM },
   ): Promise<void>;
 
   // takeDue returns array of jobs ready to send (have exceeded their retry delay)
@@ -235,6 +299,21 @@ export interface OutboxRepository {
 
   // give up on this message permanently
   markPermanentlyFailed(jobId: string, error: string): Promise<void>;
+}
+
+// ==================== Transactions ====================
+
+// Repositories bound to a single database transaction
+export interface TransactionalRepositories {
+  cases: CaseRepository;
+  decisions: DecisionRepository;
+  audit: AuditRepository;
+  outbox: OutboxRepository;
+}
+
+// Runs work atomically: a state change, its audit entry, and its outbox messages commit together or not at all
+export interface UnitOfWork {
+  run<T>(work: (repos: TransactionalRepositories) => Promise<T>): Promise<T>;
 }
 
 // ==================== Logging ====================

@@ -147,6 +147,7 @@ export function registerOutboxCommands(program: Command): void {
           where: { id: jobId },
           data: {
             status: 'pending',
+            attempts: 0, // fresh retry budget; otherwise a permanently failed job fails again after one attempt
             nextAttemptAt: new Date(),
             lastError: null,
           },

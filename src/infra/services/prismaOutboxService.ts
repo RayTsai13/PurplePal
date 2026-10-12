@@ -1,26 +1,41 @@
-import { Prisma, PrismaClient, Outbox as PrismaOutbox } from '../../../generated/prisma';
-import type { OutboxJob, OutboxRepository } from '../../core/ports';
+import { Prisma, Outbox as PrismaOutbox } from '../../../generated/prisma';
+import type {
+  EnqueueOptions,
+  OutboxFollowUpDM,
+  OutboxJob,
+  OutboxKind,
+  OutboxRepository,
+} from '../../core/ports';
+
+// How long a claimed job stays invisible to other takeDue calls before it can be retried
+const CLAIM_LEASE_MS = 60 * 1000;
 
 // Shape of payload stored in database
 type OutboxPayload = {
   targetId: string;
   data?: Record<string, unknown>;
+  followUp?: OutboxFollowUpDM;
 };
 
 // Transform Prisma Outbox row to port OutboxJob
 const toJob = (row: PrismaOutbox): OutboxJob => {
-  const payloadRaw = row.payload as { targetId: string; data?: Record<string, unknown> | null } | null;
+  const payloadRaw = row.payload as {
+    targetId: string;
+    data?: Record<string, unknown> | null;
+    followUp?: OutboxFollowUpDM | null;
+  } | null;
   const payload = payloadRaw
     ? {
         targetId: payloadRaw.targetId,
         data: payloadRaw.data ?? undefined,
+        followUp: payloadRaw.followUp ?? undefined,
       }
     : undefined;
 
   return {
     id: row.id,
     caseId: row.caseId ?? undefined,
-    kind: row.kind as OutboxJob['kind'],
+    kind: row.kind as OutboxKind,
     template: row.template,
     payload,
     attempts: row.attempts,
@@ -28,16 +43,16 @@ const toJob = (row: PrismaOutbox): OutboxJob => {
 };
 
 // Prisma repository implementing OutboxRepository port interface
-// Implements reliable message delivery with exponential backoff retries
+// Accepts either the root client or a transaction client (see PrismaUnitOfWork)
 export class PrismaOutboxRepository implements OutboxRepository {
-  constructor(private readonly prisma: PrismaClient) {}
+  constructor(private readonly prisma: Prisma.TransactionClient) {}
 
   // Queue a direct message to user
   async enqueueDM(
     userId: string,
     template: string,
     data?: Record<string, unknown>,
-    options?: { caseId?: string; idempotencyKey?: string },
+    options?: EnqueueOptions,
   ): Promise<void> {
     await this.enqueue('dm', template, { targetId: userId, data }, options);
   }
@@ -47,28 +62,44 @@ export class PrismaOutboxRepository implements OutboxRepository {
     channelId: string,
     template: string,
     data?: Record<string, unknown>,
-    options?: { caseId?: string; idempotencyKey?: string },
+    options?: EnqueueOptions,
   ): Promise<void> {
     await this.enqueue('channel', template, { targetId: channelId, data }, options);
   }
 
-  // Internal method to queue a message
-  // Idempotency key prevents duplicate enqueuing
-  // Catches unique constraint violation (P2002) if message already queued
+  // Queue a role change for a guild member
+  async enqueueRoleChange(
+    userId: string,
+    change: 'add' | 'remove',
+    roleIds: string[],
+    options?: EnqueueOptions & { followUp?: OutboxFollowUpDM },
+  ): Promise<void> {
+    await this.enqueue(
+      change === 'add' ? 'role_add' : 'role_remove',
+      '',
+      { targetId: userId, data: { roleIds }, followUp: options?.followUp },
+      options,
+    );
+  }
+
+  // Internal method to queue a job
+  // skipDuplicates turns a repeated idempotency key into a no-op (INSERT ... ON CONFLICT DO NOTHING)
+  // rather than a unique violation, which would abort an enclosing transaction
   private async enqueue(
-    kind: 'dm' | 'channel',
+    kind: OutboxKind,
     template: string,
     payload: OutboxPayload,
-    options?: { caseId?: string; idempotencyKey?: string },
+    options?: EnqueueOptions,
   ): Promise<void> {
     const storedPayload = {
       targetId: payload.targetId,
       data: payload.data ?? null,
+      ...(payload.followUp ? { followUp: payload.followUp } : {}),
     } as unknown as Prisma.InputJsonValue;
 
-    try {
-      await this.prisma.outbox.create({
-        data: {
+    await this.prisma.outbox.createMany({
+      data: [
+        {
           caseId: options?.caseId ?? null,
           kind,
           template,
@@ -78,48 +109,35 @@ export class PrismaOutboxRepository implements OutboxRepository {
           nextAttemptAt: new Date(),
           idempotencyKey: options?.idempotencyKey ?? null,
         },
-      });
-    } catch (error) {
-      // P2002 is unique constraint violation (duplicate idempotency key)
-      if (
-        options?.idempotencyKey &&
-        error instanceof Prisma.PrismaClientKnownRequestError &&
-        error.code === 'P2002'
-      ) {
-        return;
-      }
-      throw error;
-    }
+      ],
+      skipDuplicates: true,
+    });
   }
 
-  // Get pending messages ready to send
-  // OR: [nextAttemptAt: null] (first attempt) OR nextAttemptAt <= now (retry time reached)
-  // Updates nextAttemptAt to delay future attempts (prevents hammering)
-  // Transaction ensures atomicity: fetch and update in one operation
+  // Claim up to batchSize pending jobs that are due, pushing their nextAttemptAt forward by a lease
+  // so they aren't picked up again while being processed. FOR UPDATE SKIP LOCKED makes this safe
+  // if more than one worker ever polls the same table.
+  // Prisma stores DateTime as UTC in "timestamp without time zone" columns, so raw Date parameters
+  // (sent as timestamptz) are converted with AT TIME ZONE 'UTC'; otherwise the comparison would
+  // depend on the database session's timezone
   async takeDue(batchSize: number): Promise<OutboxJob[]> {
     const now = new Date();
-    return this.prisma.$transaction(async (tx) => {
-      const rows = await tx.outbox.findMany({
-        where: {
-          status: 'pending',
-          OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: now } }],
-        },
-        orderBy: { nextAttemptAt: 'asc' },
-        take: batchSize,
-      });
+    const leaseUntil = new Date(now.getTime() + CLAIM_LEASE_MS);
 
-      if (rows.length === 0) {
-        return [];
-      }
+    const rows = await this.prisma.$queryRaw<PrismaOutbox[]>`
+      UPDATE "outbox" SET "nextAttemptAt" = (${leaseUntil}::timestamptz AT TIME ZONE 'UTC')
+      WHERE "id" IN (
+        SELECT "id" FROM "outbox"
+        WHERE "status" = 'pending'
+          AND ("nextAttemptAt" IS NULL OR "nextAttemptAt" <= (${now}::timestamptz AT TIME ZONE 'UTC'))
+        ORDER BY "nextAttemptAt" ASC NULLS FIRST
+        LIMIT ${batchSize}
+        FOR UPDATE SKIP LOCKED
+      )
+      RETURNING *
+    `;
 
-      // Lock these messages for 60 seconds by setting nextAttemptAt to future time
-      await tx.outbox.updateMany({
-        where: { id: { in: rows.map((row) => row.id) } },
-        data: { nextAttemptAt: new Date(Date.now() + 60 * 1000) },
-      });
-
-      return rows.map(toJob);
-    });
+    return rows.map(toJob);
   }
 
   // Mark message as successfully sent
@@ -128,6 +146,7 @@ export class PrismaOutboxRepository implements OutboxRepository {
       where: { id: jobId },
       data: {
         status: 'sent',
+        attempts: { increment: 1 },
         lastError: null,
         nextAttemptAt: null,
       },

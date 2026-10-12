@@ -39,9 +39,9 @@ Once inside the interactive CLI, use these commands:
 |---------|-------------|
 | `case list-pending` | List cases awaiting RA review |
 | `case inspect <caseId>` | View case details and audit trail |
-| `case force-expire <caseId>` | Manually expire a case |
-| `case force-decide <caseId> <approve\|deny>` | Admin override decision |
-| `case reset-user <userId>` | Clear user's verification |
+| `case force-expire <caseId> [-r reason]` | Expire an active case and DM the user |
+| `case force-decide <caseId> <approve\|deny> [-r reason]` | Admin override decision (approval grants the hall role) |
+| `case reset-user <userId> [-t term]` | Cancel the user's cases and revoke their hall role (audit kept) |
 
 ### Notification Queue
 
@@ -49,7 +49,7 @@ Once inside the interactive CLI, use these commands:
 |---------|-------------|
 | `outbox list` | List pending/failed messages |
 | `outbox inspect <jobId>` | View message details and payload |
-| `outbox retry <jobId>` | Retry a failed message |
+| `outbox retry <jobId>` | Retry a failed job with a fresh attempt budget |
 | `outbox purge-failed` | Delete all failed messages |
 
 ### Configuration
@@ -59,6 +59,7 @@ Once inside the interactive CLI, use these commands:
 | `config show` | Display current configuration |
 | `config halls` | List all configured halls |
 | `config templates` | Show message templates |
+| `config validate` | Validate `config/policy.json` (non-interactive CLI only; the bot reloads the file itself) |
 
 ## Example Session
 

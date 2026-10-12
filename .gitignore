@@ -4,6 +4,10 @@ node_modules
 
 /generated/prisma
 
+# Build output and local databases
+dist/
+*.db
+
 # Claude Code artifacts
 .claude/
 CLAUDE.md

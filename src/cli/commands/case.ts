@@ -1,5 +1,6 @@
 import { Command } from 'commander';
-import { getCliContainer } from '../container';
+import { getCliContainer, type CliContainer } from '../container';
+import { forceDecide, forceExpire, resetUser, type ActionResult } from '../actions/case';
 import { printTable, printSuccess, printError, printInfo, formatDate, formatState } from '../utils/output';
 
 // Register case management commands (inspect, list-pending, force-expire, force-decide, reset-user)
@@ -42,7 +43,8 @@ export function registerCaseCommands(program: Command): void {
             ['RA User ID', kase.raUserId || '-'],
             ['Version', kase.version.toString()],
             ['Expires At', formatDate(kase.expiresAt)],
-            ['Reminder Sent', formatDate(kase.reminderSentAt)],
+            ['Submitted At', formatDate(kase.submittedAt)],
+            ['Reminders Sent', kase.remindersSent.toString()],
             ['Updated At', formatDate(kase.updatedAt)],
           ],
         );
@@ -136,140 +138,51 @@ export function registerCaseCommands(program: Command): void {
       }
     });
 
-  // force-expire transitions a case to expired state manually (for admin intervention)
+  // force-expire transitions an active case to expired (admin intervention) and DMs the user
   caseCmd
     .command('force-expire <caseId>')
-    .description('Manually expire a case')
-    // .option() adds optional flags like -r or --reason for extra parameters
+    .description('Manually expire an active case')
     .option('-r, --reason <reason>', 'Reason for expiration')
     .action(async (caseId: string, options: { reason?: string }) => {
-      try {
-        const { cases, audit, disconnect } = await getCliContainer();
-        // Look up case to get current state and version for update
-        const kase = await cases.findById(caseId);
-
-        if (!kase) {
-          printError(`Case ${caseId} not found`);
-          await disconnect();
-          process.exit(1);
-        }
-
-        // Check that case is not already in terminal state (no double expiration)
-        if (kase.state === 'approved' || kase.state === 'denied' || kase.state === 'expired') {
-          printError(`Case is already in terminal state: ${kase.state}`);
-          await disconnect();
-          process.exit(1);
-        }
-
-        // Transition case from current state to expired with optimistic locking via version
-        await cases.updateState(caseId, kase.version, 'expired');
-        // Record action in audit log with reason if provided
-        await audit.record(
-          caseId,
-          'cli_force_expire',
-          kase.state,
-          'expired',
-          'system',
-          'cli',
-          { reason: options.reason || 'Manual expiration via CLI' },
-        );
-
-        printSuccess(`Case ${caseId} expired successfully`);
-        await disconnect();
-      } catch (error) {
-        printError(`Failed to expire case: ${(error as Error).message}`);
-        process.exit(1);
-      }
+      await runAction(async (c) => forceExpire(c, caseId, options.reason), 'Failed to expire case');
     });
 
-  // force-decide allows admin to override and approve or deny a case (bypasses RA review)
+  // force-decide lets an admin approve or deny a pending case; approval grants the hall role
   caseCmd
     .command('force-decide <caseId> <decision>')
     .description('Admin override to approve or deny a case')
     .option('-r, --reason <reason>', 'Reason for decision')
     .action(async (caseId: string, decision: string, options: { reason?: string }) => {
-      try {
-        // Validate decision parameter is one of the allowed values
-        if (decision !== 'approve' && decision !== 'deny') {
-          printError('Decision must be "approve" or "deny"');
-          process.exit(1);
-        }
-
-        const { cases, audit, prisma, disconnect } = await getCliContainer();
-        // Look up case to get current state and version
-        const kase = await cases.findById(caseId);
-
-        if (!kase) {
-          printError(`Case ${caseId} not found`);
-          await disconnect();
-          process.exit(1);
-        }
-
-        // Only allow force-decide on cases waiting for RA (protect terminal states)
-        if (kase.state !== 'awaiting_ra') {
-          printError(`Case is not awaiting RA review (current state: ${kase.state})`);
-          await disconnect();
-          process.exit(1);
-        }
-
-        // Convert decision string to correct state name (approve -> approved, deny -> denied)
-        const newState = decision === 'approve' ? 'approved' : 'denied';
-        // Update case state with RA user ID set to cli-admin for audit trail
-        await cases.updateState(caseId, kase.version, newState as 'approved' | 'denied', {
-          raUserId: 'cli-admin',
-        });
-
-        // Create decision record with idempotency key to prevent duplicates
-        // Date.now() makes each key unique if command runs multiple times
-        await prisma.decision.create({
-          data: {
-            caseId,
-            raUserId: 'cli-admin',
-            decision: decision as 'approve' | 'deny',
-            reason: options.reason,
-            idempotencyKey: `cli-${caseId}-${Date.now()}`,
-          },
-        });
-
-        // Log action in audit trail with reason if provided
-        await audit.record(
-          caseId,
-          `cli_force_${decision}`,
-          'awaiting_ra',
-          newState,
-          'system',
-          'cli',
-          { reason: options.reason || `Admin override via CLI` },
-        );
-
-        // Success message uses template literal to show which action succeeded
-        printSuccess(`Case ${caseId} ${decision}d successfully`);
-        await disconnect();
-      } catch (error) {
-        printError(`Failed to decide case: ${(error as Error).message}`);
-        process.exit(1);
-      }
+      await runAction(async (c) => forceDecide(c, caseId, decision, options.reason), 'Failed to decide case');
     });
 
-  // reset-user clears a user's verification state for a given term
+  // reset-user cancels a user's active/approved cases (audit trail kept) and revokes the hall role
   caseCmd
     .command('reset-user <userId>')
-    .description('Reset verification for a user')
-    // .option() adds -t or --term flag for optional term parameter
+    .description('Reset verification for a user (cancels cases and revokes the hall role)')
     .option('-t, --term <term>', 'Specific term (defaults to current)')
-    .action(async (userId: string, options: { term?: string }) => {
-      try {
-        const { cases, config, disconnect } = await getCliContainer();
-        // Use provided term or fall back to current term from config
-        const term = options.term || config.currentTerm();
-
-        // Delete all case records for this user in this term
-        await cases.resetCase(userId, term);
-        printSuccess(`Reset verification for user ${userId} in term ${term}`);
-        await disconnect();
-      } catch (error) {
-        printError(`Failed to reset user: ${(error as Error).message}`);
-        process.exit(1);
-      }
+    .option('-r, --reason <reason>', 'Reason for reset')
+    .action(async (userId: string, options: { term?: string; reason?: string }) => {
+      await runAction(async (c) => resetUser(c, userId, options.term, options.reason), 'Failed to reset user');
     });
+}
+
+// Run a shared action, print its outcome, and exit non-zero on failure
+async function runAction(
+  action: (c: CliContainer) => Promise<ActionResult>,
+  failurePrefix: string,
+): Promise<void> {
+  try {
+    const c = await getCliContainer();
+    const result = await action(c);
+    await c.disconnect();
+    if (!result.ok) {
+      printError(result.message);
+      process.exit(1);
+    }
+    printSuccess(result.message);
+  } catch (error) {
+    printError(`${failurePrefix}: ${(error as Error).message}`);
+    process.exit(1);
+  }
 }

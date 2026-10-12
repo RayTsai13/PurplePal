@@ -19,6 +19,7 @@ enum CaseState {
   approved
   denied
   expired
+  cancelled
 }
 
 enum ActorType {
@@ -41,6 +42,8 @@ enum OutboxStatus {
 enum OutboxKind {
   dm
   channel
+  role_add
+  role_remove
 }
 
 /**
@@ -57,7 +60,9 @@ model VerificationCase {
   room      String?
   raUserId  String?
   expiresAt DateTime?
+  submittedAt    DateTime? // when the case entered awaiting_ra; reminders are measured from here
   reminderSentAt DateTime?
+  remindersSent  Int       @default(0) // how many reminder_hours thresholds have been sent
   version   Int       @default(0)
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
@@ -67,6 +72,8 @@ model VerificationCase {
   decision    Decision?  @relation("CaseToDecision")
   outboxItems Outbox[]   @relation("CaseToOutbox")
 
+  // Partial unique index "cases_one_active_per_user_term" (one active case per user per term)
+  // is created by raw SQL in migration 20261006000000_integrity_fixes; Prisma can't express it
   @@index([userId, term])
   @@index([state])
   @@map("cases")
@@ -84,7 +91,7 @@ model AuditLog {
   idempotencyKey String?
   timestamp      DateTime   @default(now())
 
-  case VerificationCase @relation("CaseToAuditLogs", fields: [caseId], references: [id], onDelete: Cascade)
+  case VerificationCase @relation("CaseToAuditLogs", fields: [caseId], references: [id], onDelete: Restrict)
 
   @@index([caseId, timestamp])
   @@index([idempotencyKey])

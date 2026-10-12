@@ -1,10 +1,10 @@
-import { Prisma, PrismaClient, CaseState as PrismaCaseState } from '../../../generated/prisma';
+import { Prisma, CaseState as PrismaCaseState } from '../../../generated/prisma';
 import type { AuditRepository } from '../../core/ports';
 
 // Prisma repository implementing AuditRepository port interface
 // Records immutable audit log for all actions on cases
 export class PrismaAuditRepository implements AuditRepository {
-  constructor(private readonly prisma: PrismaClient) {}
+  constructor(private readonly prisma: Prisma.TransactionClient) {}
 
   // Log an action to audit trail
   // All parameters get coerced to database types (undefined becomes null)

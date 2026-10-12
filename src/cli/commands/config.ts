@@ -146,49 +146,32 @@ export function registerConfigCommands(program: Command): void {
       }
     });
 
-  // reload reloads configuration from disk without restarting the application
-  // Note: This only reloads the CLI's view of config. The running bot process
-  // must call reload() on its own ConfigImpl instance to pick up changes.
+  // reload validates policy.json. The running bot picks up the file on its own (it watches
+  // policy.json and also reloads on SIGHUP), so this is the pre-flight check for an edit
   configCmd
     .command('reload')
-    .description('Reload configuration from disk (validates policy.json)')
+    .alias('validate')
+    .description('Validate policy.json (the running bot reloads it automatically)')
     .action(async () => {
       try {
-        const { configImpl, disconnect } = await getCliContainer();
+        // Loading the container reads and validates policy.json; it throws listing every schema issue
+        const { config, disconnect } = await getCliContainer();
 
-        console.log('Reloading configuration from disk...\n');
-
-        // Store old values for comparison
-        const oldTerm = configImpl.currentTerm();
-        const oldHallCount = configImpl.halls().length;
-
-        // Trigger reload - this re-reads and validates policy.json
-        await configImpl.reload();
-
-        // Display new configuration summary
-        const newTerm = configImpl.currentTerm();
-        const newHalls = configImpl.halls();
-
-        printSuccess('Configuration reloaded successfully');
-        console.log();
-
+        printSuccess('Configuration is valid');
+        console.log(`\nTerm: ${config.currentTerm()}\n`);
         printTable(
-          ['Setting', 'Before', 'After'],
-          [
-            ['Term', oldTerm, newTerm],
-            ['Hall Count', oldHallCount.toString(), newHalls.length.toString()],
-          ],
+          ['Hall', 'Aliases', 'Room Example'],
+          config.halls().map((h) => [h.name, h.aliases.join(', ') || '-', h.room?.example ?? '-']),
         );
 
-        console.log('\nConfigured Halls:');
-        printTable(
-          ['Name', 'Aliases'],
-          newHalls.map((h) => [h.name, h.aliases.join(', ') || '-']),
+        console.log(
+          '\nThe running bot reloads policy.json automatically when the file changes.' +
+            '\nTo force a reload: kill -HUP <bot pid>  (Docker: docker compose kill -s HUP bot)',
         );
 
         await disconnect();
       } catch (error) {
-        printError(`Failed to reload config: ${(error as Error).message}`);
+        printError(`Configuration is invalid: ${(error as Error).message}`);
         process.exit(1);
       }
     });
